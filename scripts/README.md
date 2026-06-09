@@ -59,3 +59,20 @@ So ORG examples come from **200k**, and ultimately from the **eXalt synthetic au
 aliases/legal-form variants. 200k alone is thin (~6% of rows) for a recall-first ORG target.
 
 The `data/eval/` set (frozen, hand-checked consulting prompts) is **never** built here.
+
+## Benchmark (first baseline)
+
+`bench_gliner.py` runs an off-the-shelf GLiNER model over a held-out slice and reports
+accuracy (exact / overlap / **token coverage**) + latency percentiles + peak RSS, appending a row to
+`bench/RESULTS.md` (CLAUDE.md §2). Heavy deps (torch/gliner) live in `requirements-bench.txt`:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -r scripts/requirements-bench.txt
+
+python scripts/bench_gliner.py --model urchade/gliner_multi_pii-v1 --threshold 0.3
+python scripts/validate_models.py   # sanity-check which checkpoints load correctly
+```
+
+Note: `knowledgator/gliner-pii-edge-v1.0` (the intended edge default) does **not** load correctly
+under `gliner` 0.2.26 — it needs its ONNX/token-mode export. See `bench/RESULTS.md` → "Caveats".

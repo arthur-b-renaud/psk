@@ -1,0 +1,7 @@
+# Benchmark extras (heavy; only needed for scripts/bench_gliner.py + validate_models.py)
+# Install on top of requirements.txt. CPU torch keeps this ~200MB instead of multi-GB CUDA:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install -r scripts/requirements-bench.txt
+gliner>=0.2.20
+onnxruntime>=1.20
+psutil>=5.9
