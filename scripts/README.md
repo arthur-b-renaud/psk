@@ -76,3 +76,15 @@ python scripts/validate_models.py   # sanity-check which checkpoints load correc
 
 Note: `knowledgator/gliner-pii-edge-v1.0` (the intended edge default) does **not** load correctly
 under `gliner` 0.2.26 — it needs its ONNX/token-mode export. See `bench/RESULTS.md` → "Caveats".
+
+## Test UI
+
+`serve.py` is a single-file, **stdlib-only** local web UI (loads the model once, daemon-style).
+Paste text or pull random DB examples (with gold labels); see color-coded entities, per-request
+inference latency, and rolling session speed stats. Needs the bench deps (gliner/torch).
+
+```bash
+python scripts/serve.py                 # http://127.0.0.1:7860  (default model + 200k examples)
+python scripts/serve.py --no-examples   # paste-only, skip dataset load
+python scripts/serve.py --model urchade/gliner_multi_pii-v1 --threshold 0.3 --port 7860
+```
