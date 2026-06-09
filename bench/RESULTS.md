@@ -1,47 +1,66 @@
 # Benchmark results
 
-Python reference baseline (PyTorch CPU, single thread). Shipping target is gline-rs/ONNX — expect lower latency and RSS there. Recall is the priority (CLAUDE.md); `cover R` = fraction of gold PII tokens masked by any predicted span.
+Python reference harness (single thread). Shipping target is gline-rs/ONNX in Rust — expect lower
+RSS there than the Python+torch numbers below. Recall is the priority (CLAUDE.md); `cover R` =
+fraction of gold PII tokens masked by any predicted span (the masking-aligned metric).
 
-| model | thr | prompts | ORG ovR | ORG covR | PER covR | LOC covR | ADDR covR | all-tok cover | p50 ms | p95 ms | thr/s | RSS MB | disk MB |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| urchade/gliner_multi_pii-v1 | 0.3 | 200 | 0.200 | 0.872 | 1.000 | 0.787 | 0.883 | 0.870 | 177.2 | 1380.5 | 2.7 | 3273 | 1156 |
-| urchade/gliner_multi_pii-v1 | 0.5 | 200 | 0.200 | 0.744 | 0.968 | 0.750 | 0.844 | 0.824 | 177.5 | 1086.1 | 3.1 | 3296 | 1156 |
+| model | runtime | thr | prompts | ORG ovR | ORG covR | PER covR | LOC covR | ADDR covR | all-tok cover | p50 ms | p95 ms | thr/s | RSS MB | disk MB |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| urchade/gliner_multi_pii-v1 | torch fp32 | 0.3 | 200 | 0.200 | 0.872 | 1.000 | 0.787 | 0.883 | **0.870** | 177.2 | 1380.5 | 2.7 | 3273 | 1156 |
+| urchade/gliner_multi_pii-v1 | torch fp32 | 0.5 | 200 | 0.200 | 0.744 | 0.968 | 0.750 | 0.844 | 0.824 | 177.5 | 1086.1 | 3.1 | 3296 | 1156 |
+| knowledgator/gliner-pii-edge (model.onnx) | onnx fp32 | 0.3 | 100 | — | — | — | — | — | _n/a*_ | 13.5 | 24.5 | 69.4 | 1179 | 181 |
+| knowledgator/gliner-pii-edge (model_quint8.onnx) | onnx UINT8 | 0.3 | 100 | — | — | — | — | — | _n/a*_ | **8.3** | 15.0 | 110.6 | 1006 | **46** |
+
+`*` edge **accuracy is not valid yet** — see "Edge model status". The edge rows are a **speed/memory**
+measurement only.
 
 ## Run config
 
-- Eval slice: 200 held-out **English** prompts from `ai4privacy/pii-masking-200k` (skip 20000),
-  369 gold PII tokens, **only ~10 organization spans (39 tokens)** — ORG numbers are noisy, small-N.
-  `openpii-1m` contributed 0 here (its English rows weren't found in the scanned window); the slice
-  is 200k-only for now.
+- Eval slice: held-out **English** prompts from `ai4privacy/pii-masking-200k` (skip 20000); 200
+  prompts (369 gold tokens) for the ceiling model, 100 for the edge speed runs. **Only ~10–24
+  organization spans** — ORG accuracy numbers are noisy/small-N.
 - Metrics: `exact` (boundary-strict), `overlap` (label-aware token overlap), `cover R`
   (fraction of gold PII tokens masked by ANY predicted span — the masking-aligned metric).
-- Hardware: local CPU, single thread, PyTorch fp32. Model `predict_entities`, labels
-  `[organization, person, location, address]`.
+- Hardware: local CPU, single thread. Labels `[organization, person, location, address]`.
 
 ## Reading the numbers
 
-- **Coverage recall is high** (overall 0.87 @ thr 0.3): the model masks ~87% of gold PII tokens.
-  PERSON is ~1.0. This is what matters for a masking tool.
-- **Exact/overlap are much lower than coverage** because GLiNER emits coarser, still-correct spans
+### Accuracy (ceiling model)
+- **Coverage recall is high** (overall 0.87 @ thr 0.3): masks ~87% of gold PII tokens; PERSON ~1.0.
+  This is what matters for a masking tool.
+- **Exact/overlap are far below coverage** because GLiNER emits coarser, still-correct spans
   (keeps titles "Mr/Judge", merges "Mount Hope Road" + number) while ai4privacy gold splits finely.
-  For masking this is fine (over-masking is acceptable, CLAUDE.md); for boundary-faithful NER it isn't.
-- **ORG overlap recall 0.20 vs coverage 0.87**: org tokens usually get masked, but often under a
-  different label — and the sample is tiny. ORG needs (a) far more org-bearing eval, (b) the eXalt
-  synthetic set, before any number here is trustworthy.
-- Lower threshold (0.3) → higher coverage than 0.5, as expected (recall-leaning).
+  Over-masking is acceptable (CLAUDE.md), so coverage is the honest metric here.
+- **ORG overlap 0.20 vs coverage 0.87**: org tokens usually get masked, often under another label;
+  sample is tiny. ORG needs more org-bearing eval + the eXalt synthetic set before it's trustworthy.
 
-## Caveats / known issues
+### Speed / memory (the edge story)
+- **ONNX UINT8 edge is ~20× faster than the torch ceiling**: p50 **8.3 ms** vs 177 ms, p95 15 ms vs
+  1380 ms, 110 prompts/s single thread — comfortably inside the CLAUDE.md 30–50 ms p95 budget.
+- **Disk 46 MB (UINT8)** vs 1156 MB ceiling — a 25× shrink; fp32 ONNX is 181 MB.
+- **RSS (~1 GB) is misleading**: it's dominated by the Python+torch import that `gliner` pulls in even
+  for ONNX inference. The ONNX model itself is 46 MB. In the real **gline-rs (Rust, no torch)** path,
+  RSS should be a small fraction of this — that measurement is the actual deliverable, pending the
+  Rust runtime.
 
-- This is the **accuracy-ceiling** model (`gliner_multi_pii-v1`, ~1.2 GB on disk, ~3.3 GB RSS,
-  ~180 ms p50 on CPU). It is NOT the deployment target — far too heavy. It establishes the ceiling.
-- **`knowledgator/gliner-pii-edge-v1.0` (the intended default) does not load correctly under
-  `gliner` 0.2.26** — it emits per-token noise (max score ~0.1), a TokenMode/SpanMode export
-  mismatch (the silent-failure case CLAUDE.md warns about). Resolve via its ONNX/token-mode export
-  before benching the edge tier. `scripts/validate_models.py` reproduces this.
-- Speed/RSS here include the Python+torch runtime; gline-rs/ONNX+UINT8 will be dramatically lighter.
+## Edge model status (blocker)
+
+`knowledgator/gliner-pii-edge-v1.0` and `-small-v1.0` are **token-level GLiNER with a ModernBERT
+encoder**, and ship `onnx/{model,model_fp16,model_quint8}.onnx`.
+
+- **torch load** → per-token noise (max score ~0.1), everything labelled `organization`.
+- **ONNX load** → runs fast and clean, but scores are **~100× too low** (max ~0.012); relative ranking
+  is right ("Acme Corp" tops) but absolute scores never clear any usable threshold → ~0 entities.
+
+This is a decoding/version mismatch: `gliner` 0.2.26 mis-scales these ModernBERT token-level outputs
+(the silent TokenMode/SpanMode failure CLAUDE.md warns about). Reproduce with
+`scripts/validate_models.py` and `scripts/try_onnx_edge.py`. To unblock accuracy: pin a `gliner`
+version that supports these checkpoints, or implement token-level ONNX decode directly (the eventual
+gline-rs path). **Speed/memory above are valid; edge accuracy is not, yet.**
 
 ## Next
 
-1. Stand up the edge model correctly (ONNX/token-mode) and add its row — the real latency/RSS story.
-2. Grow ORG eval (more 200k + eXalt synthetic) so ORG recall is statistically meaningful.
-3. Freeze a hand-checked `data/eval/` consulting set (CLAUDE.md) — this slice is a smoke proxy.
+1. Fix edge decoding (gliner version or direct ONNX/token-level decode) → real edge accuracy row.
+2. Stand up the gline-rs (Rust) runtime → the true RSS number without the torch tax.
+3. Grow ORG eval (more 200k + eXalt synthetic) so ORG recall is statistically meaningful.
+4. Freeze a hand-checked `data/eval/` consulting set (CLAUDE.md) — current slice is a smoke proxy.

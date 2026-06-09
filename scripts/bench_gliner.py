@@ -95,6 +95,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default="urchade/gliner_multi_pii-v1")
+    ap.add_argument("--onnx-file", default=None,
+                    help="load via this ONNX file in the repo (e.g. onnx/model_quint8.onnx)")
     ap.add_argument("--datasets",
                     default="ai4privacy/pii-masking-200k,ai4privacy/pii-masking-openpii-1m")
     ap.add_argument("--skip-rows", type=int, default=20000)
@@ -119,7 +121,11 @@ def main():
 
     from gliner import GLiNER
     t0 = time.perf_counter()
-    model = GLiNER.from_pretrained(args.model).eval()
+    if args.onnx_file:
+        model = GLiNER.from_pretrained(args.model, load_onnx_model=True,
+                                       onnx_model_file=args.onnx_file).eval()
+    else:
+        model = GLiNER.from_pretrained(args.model).eval()
     print(f"model loaded in {time.perf_counter() - t0:.1f}s")
     for e in evalset[:3]:
         model.predict_entities(e["text"], LABELS, threshold=args.threshold)
@@ -181,8 +187,16 @@ def main():
     lat = sorted(latencies)
     pct = lambda q: lat[min(len(lat) - 1, int(q * len(lat)))]
     peak_rss_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
-    disk = model_disk_size(args.model)
+    if args.onnx_file:
+        try:
+            from huggingface_hub import hf_hub_download
+            disk = Path(hf_hub_download(args.model, args.onnx_file)).resolve().stat().st_size
+        except Exception:
+            disk = None
+    else:
+        disk = model_disk_size(args.model)
     disk_mb = disk / 1e6 if disk else None
+    tag = f"{args.model} ({args.onnx_file.split('/')[-1]})" if args.onnx_file else args.model
     thr = 1000.0 / statistics.mean(latencies)
 
     print("\n=== example predictions ===")
@@ -222,7 +236,7 @@ def main():
             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
     cov = lambda l: (f"{cov_hit[l]/cov_tot[l]:.3f}" if cov_tot[l] else "n/a")
     with out.open("a") as f:
-        f.write(f"| {args.model} | {args.threshold} | {len(evalset)} | {org_ov_r:.3f} | "
+        f.write(f"| {tag} | {args.threshold} | {len(evalset)} | {org_ov_r:.3f} | "
                 f"{cov('organization')} | {cov('person')} | {cov('location')} | {cov('address')} | "
                 f"{tot_cov:.3f} | {pct(.5):.1f} | {pct(.95):.1f} | {thr:.1f} | {peak_rss_mb:.0f} | "
                 f"{disk_mb:.0f} |\n" if disk_mb else "n/a |\n")
