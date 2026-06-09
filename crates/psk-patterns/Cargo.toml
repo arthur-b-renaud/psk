@@ -1,0 +1,20 @@
+[package]
+name = "psk-patterns"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Layer 1: regex-based PII and secret detection with validators"
+
+[dependencies]
+psk-core = { workspace = true }
+regex = { workspace = true }
+aho-corasick = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+luhn3 = { workspace = true }
+iban_validate = { workspace = true }
+card-validate = { workspace = true }
+once_cell = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

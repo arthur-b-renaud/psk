@@ -1,0 +1,8 @@
+Server configuration:
+
+Public IP: 203.0.113.42
+Internal: 10.0.0.1
+IPv6: 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+MAC: 00:1A:2B:3C:4D:5E
+
+Repo URL with auth: https://deploy:s3cretToken@github.com/org/repo.git

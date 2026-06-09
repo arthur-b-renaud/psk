@@ -1,0 +1,16 @@
+Hey Claude, can you help me debug this config?
+
+My AWS key is AKIAIOSFODNN7EXAMPLE and the secret is wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY.
+The server is at 203.0.113.42 and the admin email is admin@company.com.
+
+Here's the customer record:
+- Name: Jean Dupont
+- INSEE: 2 55 05 78 043 012 97
+- Phone: 06 12 34 56 78
+- Card: 4111 1111 1111 1111
+- IBAN: FR76 3000 6000 0112 3456 7890 189
+
+The API token in our .env is:
+ANTHROPIC_API_KEY=sk-ant-api03-realKeyHereDontShareItPlease1234567890
+
+Can you figure out why the connection to https://deploy:p4ssw0rd@staging.internal.com/api keeps timing out?

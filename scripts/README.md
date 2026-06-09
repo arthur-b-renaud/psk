@@ -1,0 +1,61 @@
+# Data pipeline
+
+Builds a GLiNER-format NER training set for the PSK ML layer (see [`../CLAUDE.md`](../CLAUDE.md) §1).
+
+## Setup
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r scripts/requirements.txt
+```
+
+## Build a dataset
+
+```bash
+# small slice, single corpus (validate plumbing)
+python scripts/build_dataset.py --max-rows 3000
+
+# recommended ORG-bearing mix: openpii-1m (breadth) + 200k (COMPANYNAME -> organization)
+python scripts/build_dataset.py \
+    --datasets ai4privacy/pii-masking-openpii-1m,ai4privacy/pii-masking-200k \
+    --max-rows 2500 --val-frac 0.1
+
+# larger / language-filtered
+python scripts/build_dataset.py --datasets ai4privacy/pii-masking-openpii-1m \
+    --max-rows 50000 --languages en,fr
+```
+
+`--max-rows` is **per dataset**. `stats.json` reports `rows_per_dataset` and
+`organization_spans_per_dataset` so you can see exactly where ORG examples come from.
+
+Outputs to `data/processed/`:
+
+- `train.jsonl`, `val.jsonl` — one example per line:
+  `{"tokenized_text": [...], "ner": [[tok_start, tok_end, label], ...], "language", "uid"}`
+  (token indices are **inclusive**, the GLiNER training convention).
+- `stats.json` — per-split label counts, source-label histogram, unmapped labels, alignment drops.
+
+## Label mapping
+
+`data/label_map.json` collapses the source taxonomy into the narrow PSK set
+`{organization, person, location, address}`. Everything structured (emails, IDs, cards, phones, …)
+maps to `O` and is dropped — those stay in the regex/secrets layers. Unknown source labels fall back
+to `O` and are reported in `stats.json` so the map can be extended.
+
+## Known gap: ORGANIZATION
+
+`ai4privacy/pii-masking-openpii-1m` contains **no `ORGANIZATION` class** (19 labels, none org-like).
+Measured org coverage across the corpora (this is why the default mix includes 200k):
+
+| Corpus                            | Org-bearing label | Notes                                  |
+| --------------------------------- | ----------------- | -------------------------------------- |
+| `ai4privacy/pii-masking-openpii-1m` | — (none)        | 19 labels, **zero org**                |
+| `ai4privacy/pii-masking-200k`     | `COMPANYNAME` (~6%) | 56 labels — **the public ORG source** |
+| `ai4privacy/pii-masking-400k`     | — (none)          | 17 labels, no org; use for lang/volume |
+
+So ORG examples come from **200k**, and ultimately from the **eXalt synthetic augmentation**
+(CLAUDE.md §1): synthetic consulting/dev prompts seeded with client-style company names and their
+aliases/legal-form variants. 200k alone is thin (~6% of rows) for a recall-first ORG target.
+
+The `data/eval/` set (frozen, hand-checked consulting prompts) is **never** built here.

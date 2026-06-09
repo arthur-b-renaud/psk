@@ -1,0 +1,12 @@
+Please contact our team:
+
+Email: john.doe@example.com
+Alt email: jane_smith+work@subdomain.example.co.uk
+
+French mobile: 06 12 34 56 78
+French mobile intl: +33 6 12 34 56 78
+French landline: 01 23 45 67 89
+
+US phone: (555) 123-4567
+US phone alt: +1-555-987-6543
+International: +447911123456

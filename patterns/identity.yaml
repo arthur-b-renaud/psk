@@ -1,0 +1,41 @@
+- name: us_ssn
+  entity: UsSsn
+  pattern: '\b\d{3}-\d{2}-\d{4}\b'
+  confidence: 0.95
+  validator: null
+  description: "US Social Security Number (format: XXX-XX-XXXX)"
+
+- name: fr_insee
+  entity: FrInsee
+  pattern: '\b[12]\s?\d{2}\s?\d{2}\s?\d{2}\s?\d{3}\s?\d{3}\s?\d{2}\b'
+  confidence: 0.95
+  validator: insee
+  description: "French INSEE number (numéro de sécurité sociale)"
+
+- name: fr_siret
+  entity: FrSiret
+  pattern: '\b\d{3}\s?\d{3}\s?\d{3}\s?\d{5}\b'
+  confidence: 0.95
+  validator: siret
+  description: "French SIRET number (14 digits, spaces allowed)"
+
+- name: fr_siren
+  entity: FrSiren
+  pattern: '\b\d{3}\s?\d{3}\s?\d{3}\b'
+  confidence: 0.6
+  validator: siren
+  description: "French SIREN number (9 digits, spaces allowed). Low confidence because 9-digit numbers are common."
+
+- name: es_nif_nie
+  entity: EsNif
+  pattern: '\b[XYZ]?\d{7,8}[A-Z]\b'
+  confidence: 0.95
+  validator: null
+  description: "Spanish NIF/NIE identification number"
+
+- name: uk_nin
+  entity: UkNin
+  pattern: '\b[A-CEGHJ-PR-TW-Z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]\b'
+  confidence: 0.95
+  validator: null
+  description: "UK National Insurance Number"

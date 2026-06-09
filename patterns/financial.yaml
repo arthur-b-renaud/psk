@@ -1,0 +1,41 @@
+- name: credit_card_visa
+  entity: CreditCard
+  pattern: '4\d{3}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}'
+  confidence: 0.90
+  validator: luhn
+  description: "Visa credit card number starting with 4"
+
+- name: credit_card_mastercard
+  entity: CreditCard
+  pattern: '5[1-5]\d{2}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}'
+  confidence: 0.90
+  validator: luhn
+  description: "Mastercard credit card number starting with 51-55"
+
+- name: credit_card_amex
+  entity: CreditCard
+  pattern: '3[47]\d{2}[\s-]?\d{6}[\s-]?\d{5}'
+  confidence: 0.90
+  validator: luhn
+  description: "American Express credit card number starting with 34 or 37"
+
+- name: iban
+  entity: Iban
+  pattern: '[A-Z]{2}\d{2}\s?[\dA-Z]{4}(?:\s?[\dA-Z]{4}){2,7}(?:\s?[\dA-Z]{1,4})?'
+  confidence: 0.85
+  validator: iban
+  description: "International Bank Account Number"
+
+- name: bic_swift
+  entity: Bic
+  pattern: '[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?'
+  confidence: 0.80
+  validator: null
+  description: "BIC/SWIFT bank identifier code (8 or 11 characters)"
+
+- name: fr_rib
+  entity: FrRib
+  pattern: '\d{5}\s\d{5}\s[0-9A-Z]{11}\s\d{2}'
+  confidence: 0.90
+  validator: null
+  description: "French RIB bank account identifier"

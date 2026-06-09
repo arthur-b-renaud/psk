@@ -1,0 +1,24 @@
+[package]
+name = "psk-pii-ml"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "ML/NER layer: GLiNER ONNX entity detection (organization/person/location/address) via gline-rs (optional, behind the `gliner` feature)"
+
+[features]
+default = []
+# Enables the ONNX/GLiNER runtime. Regex-only builds must compile without it.
+gliner = []
+
+[dependencies]
+psk-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+# ONNX runtime - lands with the `gliner` feature; stubbed for now.
+# gline-rs = "1"
+# ort = { version = "2", features = ["load-dynamic"] }
+# tokenizers = "0.19"
