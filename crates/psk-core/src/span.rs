@@ -8,16 +8,35 @@ pub enum EntityType {
     // Secrets
     AwsAccessKey,
     AwsSecretKey,
+    AwsSessionToken,
     AnthropicApiKey,
     OpenAiApiKey,
     GitHubToken,
+    GitlabToken,
     StripeKey,
     GoogleApiKey,
+    GcpServiceAccountKey,
     SlackToken,
+    SlackWebhook,
+    TwilioKey,
+    SendgridKey,
+    MailgunKey,
+    NpmToken,
+    PypiToken,
+    HuggingfaceToken,
+    DigitaloceanToken,
+    CloudflareToken,
+    DatadogKey,
+    SentryDsn,
+    DiscordToken,
+    TelegramBotToken,
+    ShopifyToken,
     Jwt,
     BearerToken,
     GenericSecret,
     SshPrivateKey,
+    PgpPrivateKey,
+    ConnectionString,
 
     // Contact
     Email,
@@ -49,12 +68,6 @@ pub enum EntityType {
     Uuid,
     Base64Blob,
     HexBlob,
-
-    // NER (Layer 2)
-    Person,
-    Organization,
-    Address,
-    Location,
 
     // User-defined
     Custom(String),

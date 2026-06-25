@@ -1,12 +1,9 @@
-/// Post-match validators that reduce false positives.
-/// Each validator takes the raw matched text and returns true if it's valid.
+//! Post-match validators that reduce false positives.
+//! Each validator takes the raw matched text and returns true if it's valid.
 
 /// Luhn checksum validation for credit card numbers.
 pub fn validate_luhn(text: &str) -> bool {
-    let digits: Vec<u8> = text
-        .bytes()
-        .filter(|b| b.is_ascii_digit())
-        .collect();
+    let digits: Vec<u8> = text.bytes().filter(|b| b.is_ascii_digit()).collect();
 
     if digits.len() < 13 || digits.len() > 19 {
         return false;

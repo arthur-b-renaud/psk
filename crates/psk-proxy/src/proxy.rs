@@ -3,35 +3,59 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::any;
+use axum::routing::{any, post};
+use axum::Json;
 use axum::Router;
-use psk_core::Pipeline;
+use psk_core::{Pipeline, Vault};
+use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
 /// Shared state for the proxy.
 pub struct ProxyState {
     pub pipeline: Pipeline,
+    pub vault: Arc<Vault>,
+    /// Shared secret required to call `/psk/detokenize` (restoration of real values is privileged).
+    pub auth_token: String,
     pub anthropic_upstream: String,
     pub openai_upstream: String,
+    pub gemini_upstream: String,
     pub client: reqwest::Client,
 }
 
 /// Start the proxy server on the given address.
+///
+/// `pipeline` must already be built `.with_vault(vault.clone())` so egress scrubbing tokenizes into
+/// the same vault that `/psk/detokenize` reads from.
 pub async fn start_proxy(
     bind_addr: &str,
     pipeline: Pipeline,
+    vault: Arc<Vault>,
+    auth_token: String,
 ) -> anyhow::Result<()> {
+    // Upstreams are overridable via env (Azure / self-hosted gateways / tests).
+    let upstream =
+        |var: &str, default: &str| std::env::var(var).unwrap_or_else(|_| default.to_string());
     let state = Arc::new(ProxyState {
         pipeline,
-        anthropic_upstream: "https://api.anthropic.com".to_string(),
-        openai_upstream: "https://api.openai.com".to_string(),
+        vault,
+        auth_token,
+        anthropic_upstream: upstream("PSK_ANTHROPIC_UPSTREAM", "https://api.anthropic.com"),
+        openai_upstream: upstream("PSK_OPENAI_UPSTREAM", "https://api.openai.com"),
+        gemini_upstream: upstream(
+            "PSK_GEMINI_UPSTREAM",
+            "https://generativelanguage.googleapis.com",
+        ),
         client: reqwest::Client::new(),
     });
 
     let app = Router::new()
         .route("/v1/messages", any(handle_anthropic))
         .route("/v1/chat/completions", any(handle_openai))
+        // Gemini native REST (Antigravity, best-effort): /v1beta/models/{model}:generateContent etc.
+        .route("/v1beta/*rest", any(handle_gemini))
+        .route("/v1/models/*rest", any(handle_gemini))
+        .route("/psk/detokenize", post(handle_detokenize))
         .route("/health", any(health))
         .with_state(state);
 
@@ -43,6 +67,22 @@ pub async fn start_proxy(
 
 async fn health() -> impl IntoResponse {
     (StatusCode::OK, "psk proxy ok")
+}
+
+/// Restore real values from PSK tokens. Used by the Claude Code `PreToolUse` restore hook so that
+/// locally-written files / commands contain the real secret while provider traffic never did.
+/// Requires the per-session auth token.
+async fn handle_detokenize(
+    State(state): State<Arc<ProxyState>>,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, StatusCode> {
+    let auth = payload.get("auth").and_then(|v| v.as_str()).unwrap_or("");
+    if auth != state.auth_token {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let text = payload.get("text").and_then(|v| v.as_str()).unwrap_or("");
+    let restored = state.vault.detokenize(text);
+    Ok(Json(json!({ "text": restored })))
 }
 
 async fn handle_anthropic(
@@ -71,6 +111,19 @@ async fn handle_openai(
     .await
 }
 
+async fn handle_gemini(
+    State(state): State<Arc<ProxyState>>,
+    req: Request<Body>,
+) -> Result<Response, StatusCode> {
+    forward_with_scrub(
+        &state,
+        req,
+        &state.gemini_upstream,
+        scrubber::scrub_gemini_request,
+    )
+    .await
+}
+
 async fn forward_with_scrub(
     state: &ProxyState,
     req: Request<Body>,
@@ -80,7 +133,11 @@ async fn forward_with_scrub(
     let (parts, body) = req.into_parts();
     let method = parts.method.clone();
     let path = parts.uri.path().to_string();
-    let query = parts.uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
+    let query = parts
+        .uri
+        .query()
+        .map(|q| format!("?{}", q))
+        .unwrap_or_default();
     let headers = parts.headers.clone();
 
     // Read the body
@@ -120,10 +177,7 @@ async fn forward_with_scrub(
     let upstream_url = format!("{}{}{}", upstream_base, path, query);
 
     // Forward the request
-    let mut upstream_req = state
-        .client
-        .request(method, &upstream_url)
-        .body(final_body);
+    let mut upstream_req = state.client.request(method, &upstream_url).body(final_body);
 
     // Forward relevant headers (skip host, content-length which reqwest handles)
     for (name, value) in headers.iter() {
@@ -133,13 +187,10 @@ async fn forward_with_scrub(
         }
     }
 
-    let upstream_resp = upstream_req
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::error!("Upstream request failed: {}", e);
-            StatusCode::BAD_GATEWAY
-        })?;
+    let upstream_resp = upstream_req.send().await.map_err(|e| {
+        tracing::error!("Upstream request failed: {}", e);
+        StatusCode::BAD_GATEWAY
+    })?;
 
     // Stream the response back
     let status = StatusCode::from_u16(upstream_resp.status().as_u16())

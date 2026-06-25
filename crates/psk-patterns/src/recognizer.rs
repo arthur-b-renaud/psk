@@ -66,16 +66,35 @@ fn parse_entity_type(s: &str) -> anyhow::Result<EntityType> {
         // Secrets
         "AwsAccessKey" => Ok(EntityType::AwsAccessKey),
         "AwsSecretKey" => Ok(EntityType::AwsSecretKey),
+        "AwsSessionToken" => Ok(EntityType::AwsSessionToken),
         "AnthropicApiKey" => Ok(EntityType::AnthropicApiKey),
         "OpenAiApiKey" => Ok(EntityType::OpenAiApiKey),
         "GitHubToken" => Ok(EntityType::GitHubToken),
+        "GitlabToken" => Ok(EntityType::GitlabToken),
         "StripeKey" => Ok(EntityType::StripeKey),
         "GoogleApiKey" => Ok(EntityType::GoogleApiKey),
+        "GcpServiceAccountKey" => Ok(EntityType::GcpServiceAccountKey),
         "SlackToken" => Ok(EntityType::SlackToken),
+        "SlackWebhook" => Ok(EntityType::SlackWebhook),
+        "TwilioKey" => Ok(EntityType::TwilioKey),
+        "SendgridKey" => Ok(EntityType::SendgridKey),
+        "MailgunKey" => Ok(EntityType::MailgunKey),
+        "NpmToken" => Ok(EntityType::NpmToken),
+        "PypiToken" => Ok(EntityType::PypiToken),
+        "HuggingfaceToken" => Ok(EntityType::HuggingfaceToken),
+        "DigitaloceanToken" => Ok(EntityType::DigitaloceanToken),
+        "CloudflareToken" => Ok(EntityType::CloudflareToken),
+        "DatadogKey" => Ok(EntityType::DatadogKey),
+        "SentryDsn" => Ok(EntityType::SentryDsn),
+        "DiscordToken" => Ok(EntityType::DiscordToken),
+        "TelegramBotToken" => Ok(EntityType::TelegramBotToken),
+        "ShopifyToken" => Ok(EntityType::ShopifyToken),
         "Jwt" => Ok(EntityType::Jwt),
         "BearerToken" => Ok(EntityType::BearerToken),
         "GenericSecret" => Ok(EntityType::GenericSecret),
         "SshPrivateKey" => Ok(EntityType::SshPrivateKey),
+        "PgpPrivateKey" => Ok(EntityType::PgpPrivateKey),
+        "ConnectionString" => Ok(EntityType::ConnectionString),
         // Contact
         "Email" => Ok(EntityType::Email),
         "PhoneInternational" => Ok(EntityType::PhoneInternational),
@@ -102,11 +121,6 @@ fn parse_entity_type(s: &str) -> anyhow::Result<EntityType> {
         "Uuid" => Ok(EntityType::Uuid),
         "Base64Blob" => Ok(EntityType::Base64Blob),
         "HexBlob" => Ok(EntityType::HexBlob),
-        // NER
-        "Person" => Ok(EntityType::Person),
-        "Organization" => Ok(EntityType::Organization),
-        "Address" => Ok(EntityType::Address),
-        "Location" => Ok(EntityType::Location),
         // Custom
         other => Ok(EntityType::Custom(other.to_string())),
     }
@@ -139,7 +153,10 @@ mod tests {
         let spans = r.recognize("Send to john@example.com please");
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].entity, EntityType::Email);
-        assert_eq!(&"Send to john@example.com please"[spans[0].start..spans[0].end], "john@example.com");
+        assert_eq!(
+            &"Send to john@example.com please"[spans[0].start..spans[0].end],
+            "john@example.com"
+        );
     }
 
     #[test]
@@ -174,7 +191,11 @@ mod tests {
 
     #[test]
     fn test_no_match() {
-        let def = make_def("email", "Email", r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}");
+        let def = make_def(
+            "email",
+            "Email",
+            r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}",
+        );
         let r = RegexRecognizer::from_definition("contact", &def).unwrap();
         let spans = r.recognize("No emails here!");
         assert!(spans.is_empty());

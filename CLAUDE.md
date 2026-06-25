@@ -1,238 +1,148 @@
-# CLAUDE.md :: psk-pii-ml (gline-rs NER component)
+# CLAUDE.md :: psk — Prompt Secret Killer
 
-Scope: this file governs the **ML / NER layer only** (`psk-pii-ml`), built on the pure-Rust
-`gline-rs` inference engine. It does **not** cover the Hyperscan regex layer (`psk-secrets`),
-the structured-PII regex layer (`psk-pii`), or the client-name gazetteer (planned, see "Out of
-scope"). Those bundle in later and are easy to wire once this layer is measured and stable.
+`psk` is a **pure-Rust, local-first egress filter** that sits between coding agents and external LLM
+providers. It detects secrets and structured PII with **deterministic, regex-like recognizers only**
+and redacts them *in flight*, so confidential data never reaches a third-party API — while the local
+machine keeps the real values.
 
-Read this before touching anything under `crates/psk-pii-ml/`, `models/`, `data/`, or `bench/`.
+There is **no ML model and no inference at runtime**. Detection is regex + validators (Luhn, IBAN,
+INSEE, SIRET, SIREN). This is a hard constraint: do not add a model, an ONNX runtime, a tokenizer
+download, or any network call at detection time. If recall on free-text entities (client/org names)
+is needed later, it returns as a *deterministic* `aho-corasick`/`fst` gazetteer over a user roster —
+never a model.
 
----
-
-## Mission and priority order
-
-The enterprise goal is to stop **client and company identities** plus personal PII from reaching
-external LLM providers. Risk is asymmetric:
-
-- A **false positive** (masking a non-sensitive word) is harmless noise.
-- A **false negative** (a client name reaching the provider) is the exact failure we prevent.
-
-Therefore this layer is tuned for **recall over precision**, with `ORGANIZATION` as the top-value
-entity. Concretely:
-
-- Lower the confidence threshold to favor recall.
-- Track `ORG` recall as the headline metric, not aggregate F1.
-- NER only earns its footprint on the **unstructured** slice: `PERSON`, `ORGANIZATION`,
-  `LOCATION` / `ADDRESS`. Everything structured (emails, IPs, IBANs, cards, SSNs) and all secrets
-  stay in the regex layers; do not route them through the model.
-
-Keep the **label set narrow** (4 to 6 labels). A small label space is the single biggest lever for
-CPU latency and memory. Do not load a 60-class catalogue we do not use.
+Read this before touching `crates/`, `patterns/`, or `fixtures/`.
 
 ---
 
-## Runtime: gline-rs
+## Mission and the two guarantees
 
-`gline-rs` runs GLiNER ONNX models in pure, safe Rust on top of ONNX Runtime (via the `orp` / `ort`
-crates), with `tokenizers` for the BPE step. No Python at inference. Single in-process binary.
+The enterprise goal is to stop **secrets and personal/company PII** from leaking to external LLM
+providers, without crippling the agent locally. Two guarantees define the design:
 
-Two pipeline modes; the mode **must match the checkpoint**:
+1. **Nothing sensitive leaves the machine in cleartext.** Every outbound provider request is scanned
+   and redacted by the proxy (the egress filter).
+2. **Local actions keep the real value.** If the agent writes a `.env`, edits a file, or runs a
+   command containing a secret, the bytes that hit the local disk/shell are the *real* secret — not
+   a placeholder.
 
-- `TokenMode` (TokenPipeline): token-classification GLiNER variants (e.g. multitask models).
-- `SpanMode` (SpanPipeline): span-scoring GLiNER models (most PII checkpoints).
+Reconciling these requires **reversible tokenization**: the proxy swaps each secret for a stable,
+opaque token (`__PSK_<hex>__`), remembers `token → secret` in an in-memory vault, and a Claude Code
+`PreToolUse` hook swaps tokens back to real values when the agent writes/edits/bashes locally. The
+provider only ever sees tokens; the filesystem only ever sees real values.
 
-Pick the mode from the model card. A mismatch produces silently wrong output, so assert it in tests.
-
-`Cargo.toml` (verify latest on crates.io before pinning):
-
-```toml
-[dependencies]
-gline-rs = "1"   # confirm current major/minor on crates.io
-```
-
-Reference call (the real API surface):
-
-```rust
-use gline_rs::{GLiNER, TextInput, Parameters, RuntimeParameters};
-use gline_rs::pipeline::SpanMode; // or TokenMode, matching the checkpoint
-
-let model = GLiNER::<SpanMode>::new(
-    Parameters::default(),
-    RuntimeParameters::default(), // thread / device config lives here + in ort session options
-    "models/gliner-pii-edge/tokenizer.json",
-    "models/gliner-pii-edge/onnx/model.onnx",
-)?;
-
-let labels = ["organization", "person", "location", "address"];
-let input = TextInput::from_str(
-    &["Engagement with Société Générale led by Jean Dupont in La Défense."],
-    &labels,
-)?;
-
-let output = model.inference(input)?; // spans + confidence per entity
-```
-
-Load the model **once** and share it (`Arc<RwLock<Option<Model>>>`, lazy-init on first call),
-behind a `gliner` cargo feature flag so the crate compiles without ONNX for regex-only builds.
-This matches the daemon design: weights loaded once, socket round-trip per prompt.
-
-Starting checkpoints (all Apache-2.0, ONNX available, CPU-friendly):
-
-- `knowledgator/gliner-pii-edge-v1.0` : edge-optimized, UINT8 ONNX, lowest latency / footprint. **Default.**
-- `knowledgator/gliner-pii-small-v1.0` : FP16 + UINT8 ONNX, quantization-aware.
-- `urchade/gliner_multi_pii-v1` : broad 60+ type coverage, use as accuracy ceiling reference.
-
-Download:
-
-```bash
-huggingface-cli download knowledgator/gliner-pii-edge-v1.0 \
-  --local-dir models/gliner-pii-edge
-# confirm models/gliner-pii-edge/onnx/model.onnx and tokenizer.json exist
-```
+Risk is asymmetric — a false positive (tokenizing a non-secret) is harmless because it round-trips,
+a missed credential is the failure we prevent — so recognizers are **tuned for recall**.
 
 ---
 
-## 1. Training and validation datasets
+## Architecture
 
-### Sources
+Cargo workspace of focused crates:
 
-Public PII corpora (ai4privacy series, token-classification format on Hugging Face):
+| Crate          | Role                                                                          |
+| -------------- | ----------------------------------------------------------------------------- |
+| `psk-core`     | `Pipeline`, `RedactionPolicy`, `Span`/`EntityType`, `Vault`, stats            |
+| `psk-patterns` | YAML-driven `RegexRecognizer` + validators (Luhn/IBAN/INSEE/SIRET/SIREN)      |
+| `psk-proxy`    | Local HTTP proxy: scrubs egress, `/psk/detokenize` endpoint                   |
+| `psk-hook`     | Agent wiring (Claude Code base-URL + `PreToolUse` restore hook)               |
+| `psk-cli`      | `psk` binary: daemon lifecycle, install, scan, restore, stats                 |
 
-- `ai4privacy/pii-masking-openpii-1m` : current flagship, 1.4M samples, 23 languages, 19 classes. Primary.
-- `ai4privacy/pii-masking-openpii-1.5m` : 1.6M samples, 30 languages, Asia Pacific extension. Use for language breadth.
-- `ai4privacy/pii-masking-300k` : OpenPII-220k + FinPII-80k. The **FinPII** subset adds finance / insurance classes, relevant to consulting clients in those sectors.
-- `ai4privacy/pii-masking-200k` (54 classes) and `pii-masking-400k` (63 classes): use only to mine extra class variety.
-
-```python
-from datasets import load_dataset
-ds = load_dataset("ai4privacy/pii-masking-openpii-1m")
-```
-
-### Critical caveat
-
-These corpora are **personal-PII heavy**. `ORGANIZATION` is a coarse, under-represented class and is
-exactly our top target. Public data alone will under-perform on client-name recall. You must augment.
-
-### eXalt augmentation (mandatory)
-
-Generate synthetic consulting / dev prompts that embed organization names the way they actually leak:
-in stack traces, configs, meeting notes, slide text, commit messages, ticket descriptions. Inject a
-roster of realistic client-style company names (and aliases / abbreviations / legal-form variants:
-"Société Générale" / "Soc Gen" / "SocGen" / "SG SA"). Generate this set on the DGX Spark with a local
-LLM. Do **not** use real client data to build training fixtures; use synthetic look-alikes.
-
-### Label mapping
-
-Map every source label down to the narrow PSK set in `data/label_map.json`. Collapse the long
-ai4privacy taxonomy into `{ORGANIZATION, PERSON, LOCATION, ADDRESS}` (plus any unstructured class
-proven necessary by eval). Anything structured maps to `O` here (handled by regex layers).
-
-### Splits and layout
+Data flow:
 
 ```
-data/
-  raw/          # untouched HF downloads
-  processed/    # converted to GLiNER span format + label_map applied
-  eval/         # held-out, real-shaped consulting prompts (NEVER trained on)
-  label_map.json
+agent → (ANTHROPIC_BASE_URL / OpenAI base URL / Gemini base URL) → psk proxy daemon
+            scrub request body  ──tokenize secrets──▶  upstream provider (sees only tokens)
+            vault: token → secret  (in daemon memory, session-scoped)
+
+agent wants to write a file / run a command locally
+            Claude Code PreToolUse hook → `psk restore --hook` → POST /psk/detokenize
+            tokens in tool input → real values → tool runs with the real secret on disk
 ```
 
-- Stratify train/val by entity type so `ORG` is not starved.
-- The `eval/` set is the gate: realistic consulting prompts, hand-checked, frozen. Report all
-  headline numbers against it. Treat any leakage of `eval/` into training as a build-breaking bug.
+### Detection layers (order)
+
+1. **Secrets** — `patterns/secrets.yaml` (broad provider catalog) + `patterns/connections.yaml`
+   (DB/broker URLs with embedded creds). Default action: **`Tokenize`** (reversible).
+2. **Structured PII** — `patterns/contact|financial|identity|network|generic.yaml` (emails, phones,
+   cards, IBANs, IPs, national IDs, …), gated by validators. Default action: **`Replace`**
+   (irreversible — PII rarely needs to round-trip into a local file).
+
+The default action per entity is decided in `psk-core/src/policy.rs` (`is_secret_entity` →
+`Tokenize`, else `Replace`); both are overridable per entity in `~/.psk/config`.
 
 ---
 
-## 2. Speed and performance experiments
+## The vault and token format (`psk-core/src/vault.rs`)
 
-### Metrics (all reported per experiment)
+- Token: `__PSK_<8+ hex>__`. ASCII-delimited so model tokenizers preserve it and it round-trips
+  through generation unchanged; matched by `__PSK_[0-9a-f]{8,}__`.
+- Deterministic within a session (same secret → same token), so re-scrubbing resent conversation
+  history is idempotent. Random across sessions (salt minted at daemon start).
+- The token is **only a handle** — it reveals nothing about the secret. Restoration is impossible
+  without the in-memory map, which lives only in the running daemon and dies with it. Never persist
+  the vault to disk.
+- `/psk/detokenize` is gated by a per-session auth token (`~/.psk/auth.token`, mode 600) that
+  `psk install` embeds in the hook command.
 
-- Latency: p50 / p95 / p99 per prompt (not just mean).
-- Throughput: prompts/sec, single thread and N threads.
-- Memory: peak RSS, model size on disk.
-- Accuracy: precision / recall / F1 **per entity**, with `ORGANIZATION` recall as the headline.
-
-### Harness
-
-- `criterion` for micro-benchmarks under `bench/`.
-- A `bench` binary that runs the full `eval/` corpus end to end and emits a CSV row per config.
-- Pin CPU governor / disable turbo where possible for stable numbers; record hardware in the row.
-
-### Variables to sweep
-
-- Model: `gliner-pii-edge` vs `small` vs `multi_pii` (accuracy ceiling).
-- Quantization: FP16 vs INT8 vs UINT8.
-- Pipeline mode: `TokenMode` vs `SpanMode` (per checkpoint).
-- Sequence handling: window size (384 / 512 tokens), overlap, batch size.
-- Threads: `ort` intra-op / inter-op (set via `RuntimeParameters` and ort session options).
-- Scope rule under test: NER on **new content only** (fresh user turn + fresh tool output);
-  the regex layers stay full-prompt. Confirm this keeps p95 inside budget on 100k-token contexts.
-
-### Targets
-
-- p95 end to end **under 30 to 50 ms** with the daemon (model preloaded), scoped to new content.
-- Peak RSS small enough to sit alongside an agent without complaint (target single-digit hundreds of MB max; lower with UINT8).
-- `ORGANIZATION` recall on `eval/` above the agreed gate (set the number once the first baseline lands).
-
-### Output
-
-Commit a results table to `bench/RESULTS.md` per run: config, latency percentiles, RSS, per-entity
-P/R/F1. This table is the decision record for whether to ship the off-the-shelf model or retrain.
-
-```bash
-cargo bench -p psk-pii-ml                 # criterion micro-benches
-cargo run -p psk-pii-ml --bin bench --release -- --corpus data/eval --model models/gliner-pii-edge
-```
+**Accepted limitation:** restoring tokens inside a `Bash` command means a malicious command could
+re-expose a secret to a *non-proxied* egress (e.g. a direct `curl`). This is inherent to guarantee
+#2 (local actions get the real value); it is documented, not prevented.
 
 ---
 
-## 3. Retraining / distillation pipeline
+## Egress scrubbing rule (`psk-proxy/src/scrubber.rs`)
 
-### Gate: do not retrain by default
-
-Retrain **only** if the off-the-shelf model fails the `eval/` recall gate, or if you need to shrink
-below the edge checkpoint. Adoption first; training is the fallback, not the starting point.
-
-### Approach
-
-Specialize a small GLiNER to the narrow label set and the consulting / dev distribution. Two teacher
-options for label generation, both run on the DGX Spark:
-
-- **Soft-label distillation:** use `gliner-pii-base` (or `multi_pii`) as teacher over the augmented corpus.
-- **LLM-as-annotator:** run a local LLM to label the synthetic consulting prompts, then fine-tune.
-
-Student: fine-tune `gliner-pii-edge` / `small` on the narrow labels using the Python `gliner` library
-(training entrypoint in the upstream gliner repo). Keep it an **encoder** (token/span tagger), not a
-generative model; generative-to-CPU is the wrong shape for this task.
-
-### Steps
-
-1. Build / refresh the augmented dataset (public + eXalt synthetic) -> `data/processed/`.
-2. Fine-tune student on the narrow label set (Spark). Log seed, config, dataset hash to `runs/<id>/`.
-3. Quantize (INT8 / UINT8).
-4. Export to ONNX (gliner `save_pretrained` + the conversion tooling in the gliner / gline-rs examples).
-5. Verify Rust parity: run the same prompts through `gline-rs` and the Python reference; assert spans
-   and labels match within tolerance, and that `TokenMode` vs `SpanMode` is correct for the new export.
-6. Drop into `models/<name>/`, re-run section 2, append to `bench/RESULTS.md`.
-7. Ship only if it beats the incumbent on `ORGANIZATION` recall at equal-or-better latency.
-
-### Reproducibility
-
-- Every run pins: dataset hash, label_map version, base checkpoint, seed, quant settings.
-- Artifacts and metrics land under `runs/<id>/`. No run, no ship.
+Scrub the **entire** outgoing body every request — all `messages[*].content` (string and text
+blocks) + `system` (Anthropic), all messages (OpenAI), `contents[*].parts[*].text` +
+`system_instruction` (Gemini). **Not** just the last turn: agents resend full history each request
+from their own un-redacted copy, so scrubbing only the latest message leaks earlier-turn secrets on
+resend. Deterministic tokenization makes whole-body re-scrubbing a cheap no-op.
 
 ---
 
-## Out of scope (handled elsewhere, do not implement here)
+## Tool wiring (`psk-hook`, `psk-cli`)
 
-- Secrets and structured PII: regex + validators in `psk-secrets` / `psk-pii`.
-- **Client-name gazetteer:** deterministic exact + fuzzy match (`aho-corasick` / `fst`) against the
-  client roster. This is the real guarantee for known clients; NER is the backstop for unknown orgs.
-  It bundles in after this layer is measured. Do not bolt it onto the model.
+- **Claude Code (full).** `psk install` writes `ANTHROPIC_BASE_URL=http://127.0.0.1:<port>` into
+  `~/.claude/settings.json` (+ shell rc fallback) and installs a `PreToolUse` hook
+  (`Write|Edit|MultiEdit|Bash`) → `psk restore --hook`. `UserPromptSubmit` is **not** used: it can
+  only block/add-context, not rewrite, and the proxy already covers egress.
+  - Caveat: with a custom base URL, server-side tool search is off by default — set
+    `ENABLE_TOOL_SEARCH=true` if relied upon.
+- **Cursor (best-effort).** Only its chat/plan panel honors "Override OpenAI Base URL"
+  (`http://127.0.0.1:<port>/v1`); Composer/apply/autocomplete bypass it. No local restore hook, so
+  tokens may surface in chat (secrets still never leave in cleartext).
+- **Antigravity (experimental).** Point its model base URL at the proxy (Gemini route); custom
+  endpoints are unstable upstream.
+
+Daemon is required (the vault lives there): `psk start` (background, PID file `~/.psk/psk.pid`,
+`setsid`-detached), `psk stop`, `psk status`. Upstreams overridable via
+`PSK_{ANTHROPIC,OPENAI,GEMINI}_UPSTREAM` (Azure/self-hosted/tests).
+
+---
+
+## Performance targets
+
+- p95 end-to-end redaction **under 30–50 ms** with the daemon (regex over the request body).
+- Peak RSS small (single-digit to low-hundreds MB).
+- Record latency/throughput per change if you touch the hot path; keep regexes anchored and avoid
+  catastrophic backtracking (the `regex` crate is linear, but keep patterns tight).
+
+---
 
 ## Agent guardrails
 
-- No network calls at inference. Model files are local; no runtime downloads.
-- Model loads once (daemon), shared read-only across requests.
-- Keep the `gliner` feature flag clean: regex-only builds must compile and run without ONNX.
-- Never commit real client data or real prompts. Fixtures are synthetic only. Stats are counters only.
+- **No model, no network at detection time.** Regex + validators only.
+- Vault is in-memory and session-scoped; never written to disk.
+- Load patterns once; daemon shares the pipeline read-only across requests.
+- **Never commit real secrets or real prompts.** `fixtures/*.txt` are synthetic only. Stats
+  (`~/.psk/stats.json`) are counters only — never content.
+- Regex-only builds must always compile and run (there is no optional ML feature anymore).
+
+---
+
+## Out of scope (do not implement here)
+
+- **Client-name gazetteer:** deterministic exact/fuzzy match (`aho-corasick`/`fst`) over a client
+  roster. The real guarantee for *known* client names; bolts on as another recognizer without
+  touching the vault/proxy design. Not a model.
