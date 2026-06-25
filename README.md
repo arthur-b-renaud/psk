@@ -84,6 +84,15 @@ by hand.
 Upstreams are overridable for Azure / self-hosted gateways via `PSK_ANTHROPIC_UPSTREAM`,
 `PSK_OPENAI_UPSTREAM`, `PSK_GEMINI_UPSTREAM`.
 
+## Documentation
+
+- [Getting started](docs/getting-started.md) — build, install, daemon, per-tool wiring, troubleshooting
+- [Architecture](docs/architecture.md) — the proxy, the vault, reversible tokenization, request lifecycle
+- [Security model](docs/security.md) — what's protected, what isn't, threat model, trade-offs
+- [Patterns & configuration](docs/patterns.md) — YAML pattern format, validators, custom packs, runtime files
+- [Contributing](CONTRIBUTING.md) — dev setup, CI gate, adding recognizers
+- [Changelog](CHANGELOG.md)
+
 ## Patterns & fixtures
 
 - `patterns/*.yaml` — declarative recognizer definitions (name, entity, regex, confidence, optional
