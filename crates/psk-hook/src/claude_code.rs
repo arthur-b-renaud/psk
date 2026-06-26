@@ -1,36 +1,50 @@
 use anyhow::{Context, Result};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::PathBuf;
 
-const PSK_HOOK_MARKER: &str = "psk-prompt-guard";
+/// Substring identifying the PSK restore hook command (used for idempotent install/uninstall).
+const RESTORE_CMD_MARKER: &str = "psk restore --hook";
+/// Tools whose input may carry secret values that must be restored before they touch the machine.
+const PRETOOLUSE_MATCHER: &str = "Write|Edit|MultiEdit|Bash";
 
-/// Install the PSK UserPromptSubmit hook into Claude Code settings.
-/// Also injects ANTHROPIC_BASE_URL into the user's shell rc file.
-pub fn install(proxy_port: u16) -> Result<()> {
-    install_hook()?;
+/// Wire PSK into Claude Code:
+/// 1. route API traffic through the local proxy (`ANTHROPIC_BASE_URL` in settings.json + shell rc),
+/// 2. install a `PreToolUse` hook that restores real values from PSK tokens into local writes/commands.
+pub fn install(proxy_port: u16, auth_token: &str) -> Result<()> {
+    let mut settings = load_or_default_settings()?;
+    set_base_url(&mut settings, proxy_port);
+    set_restore_hook(&mut settings, proxy_port, auth_token);
+    write_settings(&settings)?;
+    // Shell rc fallback (covers terminals launched before settings.json env is read).
     install_env_var(proxy_port)?;
     Ok(())
 }
 
-/// Remove PSK hooks from Claude Code settings and shell rc.
+/// Remove PSK base-URL override and restore hook from Claude Code.
 pub fn uninstall() -> Result<()> {
-    uninstall_hook()?;
+    if let Some(path) = settings_path() {
+        if path.exists() {
+            let mut settings = load_or_default_settings()?;
+            remove_base_url(&mut settings);
+            remove_restore_hook(&mut settings);
+            write_settings(&settings)?;
+        }
+    }
     uninstall_env_var()?;
     Ok(())
 }
 
-/// Check if PSK is already installed for Claude Code.
+/// Whether the PSK restore hook is present in Claude Code settings.
 pub fn is_installed() -> bool {
-    if let Some(settings) = load_settings() {
-        if let Some(hooks) = settings.get("hooks") {
-            if let Some(Value::Array(arr)) = hooks.get("UserPromptSubmit") {
-                return arr
-                    .iter()
-                    .any(|h| h.get("id").and_then(|v| v.as_str()) == Some(PSK_HOOK_MARKER));
-            }
-        }
-    }
-    false
+    let Some(settings) = load_settings() else {
+        return false;
+    };
+    settings
+        .get("hooks")
+        .and_then(|h| h.get("PreToolUse"))
+        .and_then(|v| v.as_array())
+        .map(|arr| arr.iter().any(is_psk_restore_entry))
+        .unwrap_or(false)
 }
 
 fn settings_path() -> Option<PathBuf> {
@@ -43,78 +57,97 @@ fn load_settings() -> Option<Value> {
     serde_json::from_str(&data).ok()
 }
 
-fn install_hook() -> Result<()> {
+fn load_or_default_settings() -> Result<Value> {
     let path = settings_path().context("Cannot find home directory")?;
-
-    let mut settings = if path.exists() {
+    if path.exists() {
         let data = std::fs::read_to_string(&path)?;
-        serde_json::from_str::<Value>(&data).unwrap_or_else(|_| Value::Object(Default::default()))
+        Ok(serde_json::from_str::<Value>(&data).unwrap_or_else(|_| json!({})))
     } else {
-        Value::Object(Default::default())
-    };
-
-    // Ensure hooks.UserPromptSubmit exists as an array
-    let hooks = settings
-        .as_object_mut()
-        .unwrap()
-        .entry("hooks")
-        .or_insert_with(|| Value::Object(Default::default()));
-    let user_prompt_hooks = hooks
-        .as_object_mut()
-        .unwrap()
-        .entry("UserPromptSubmit")
-        .or_insert_with(|| Value::Array(Vec::new()));
-
-    if let Value::Array(arr) = user_prompt_hooks {
-        // Remove existing PSK hook if present
-        arr.retain(|h| h.get("id").and_then(|v| v.as_str()) != Some(PSK_HOOK_MARKER));
-
-        // Add the PSK hook
-        let hook = serde_json::json!({
-            "id": PSK_HOOK_MARKER,
-            "type": "command",
-            "command": "psk scan --hook",
-            "description": "PSK: scan prompt for PII and secrets before submission",
-            "timeout": 5000
-        });
-        arr.push(hook);
+        Ok(json!({}))
     }
+}
 
-    // Write back
+fn write_settings(settings: &Value) -> Result<()> {
+    let path = settings_path().context("Cannot find home directory")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let data = serde_json::to_string_pretty(&settings)?;
-    std::fs::write(&path, data)?;
-
-    tracing::info!("Installed PSK hook in {}", path.display());
+    std::fs::write(&path, serde_json::to_string_pretty(settings)?)?;
+    tracing::info!("Updated Claude Code settings at {}", path.display());
     Ok(())
 }
 
-fn uninstall_hook() -> Result<()> {
-    let path = match settings_path() {
-        Some(p) if p.exists() => p,
-        _ => return Ok(()),
-    };
+fn set_base_url(settings: &mut Value, port: u16) {
+    let obj = settings.as_object_mut().expect("settings is an object");
+    let env = obj
+        .entry("env")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("env is an object");
+    env.insert(
+        "ANTHROPIC_BASE_URL".to_string(),
+        json!(format!("http://127.0.0.1:{}", port)),
+    );
+}
 
-    let data = std::fs::read_to_string(&path)?;
-    let mut settings: Value = serde_json::from_str(&data)?;
-
-    if let Some(hooks) = settings.get_mut("hooks") {
-        if let Some(Value::Array(arr)) = hooks.get_mut("UserPromptSubmit") {
-            arr.retain(|h| h.get("id").and_then(|v| v.as_str()) != Some(PSK_HOOK_MARKER));
-        }
+fn remove_base_url(settings: &mut Value) {
+    if let Some(env) = settings.get_mut("env").and_then(|e| e.as_object_mut()) {
+        env.remove("ANTHROPIC_BASE_URL");
     }
+}
 
-    let data = serde_json::to_string_pretty(&settings)?;
-    std::fs::write(&path, data)?;
-    tracing::info!("Removed PSK hook from {}", path.display());
-    Ok(())
+fn is_psk_restore_entry(entry: &Value) -> bool {
+    entry
+        .get("hooks")
+        .and_then(|h| h.as_array())
+        .map(|hooks| {
+            hooks.iter().any(|h| {
+                h.get("command")
+                    .and_then(|c| c.as_str())
+                    .map(|c| c.contains(RESTORE_CMD_MARKER))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+fn set_restore_hook(settings: &mut Value, port: u16, auth_token: &str) {
+    let obj = settings.as_object_mut().expect("settings is an object");
+    let hooks = obj
+        .entry("hooks")
+        .or_insert_with(|| json!({}))
+        .as_object_mut()
+        .expect("hooks is an object");
+    let pre = hooks
+        .entry("PreToolUse")
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .expect("PreToolUse is an array");
+
+    // Drop any prior PSK entry, then add the current one.
+    pre.retain(|e| !is_psk_restore_entry(e));
+    pre.push(json!({
+        "matcher": PRETOOLUSE_MATCHER,
+        "hooks": [{
+            "type": "command",
+            "command": format!("psk restore --hook --port {} --auth {}", port, auth_token),
+            "timeout": 10000
+        }]
+    }));
+}
+
+fn remove_restore_hook(settings: &mut Value) {
+    if let Some(pre) = settings
+        .get_mut("hooks")
+        .and_then(|h| h.get_mut("PreToolUse"))
+        .and_then(|v| v.as_array_mut())
+    {
+        pre.retain(|e| !is_psk_restore_entry(e));
+    }
 }
 
 fn shell_rc_path() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
-    // Prefer .zshrc on macOS, .bashrc elsewhere
     let candidates = [".zshrc", ".bashrc", ".profile"];
     for name in &candidates {
         let p = home.join(name);
@@ -122,7 +155,6 @@ fn shell_rc_path() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    // Default to .bashrc
     Some(home.join(".bashrc"))
 }
 
@@ -138,13 +170,11 @@ fn install_env_var(proxy_port: u16) -> Result<()> {
         String::new()
     };
 
-    // Remove existing PSK block
     if let (Some(start), Some(end)) = (
         contents.find(ENV_MARKER_START),
         contents.find(ENV_MARKER_END),
     ) {
         let block_end = end + ENV_MARKER_END.len();
-        // Also remove trailing newline if present
         let block_end = if contents[block_end..].starts_with('\n') {
             block_end + 1
         } else {
@@ -153,7 +183,6 @@ fn install_env_var(proxy_port: u16) -> Result<()> {
         contents.replace_range(start..block_end, "");
     }
 
-    // Append new block
     let block = format!(
         "\n{}\nexport ANTHROPIC_BASE_URL=\"http://127.0.0.1:{}\"\n{}\n",
         ENV_MARKER_START, proxy_port, ENV_MARKER_END
@@ -193,4 +222,49 @@ fn uninstall_env_var() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_url_round_trips() {
+        let mut s = json!({});
+        set_base_url(&mut s, 7878);
+        assert_eq!(s["env"]["ANTHROPIC_BASE_URL"], "http://127.0.0.1:7878");
+        remove_base_url(&mut s);
+        assert!(s["env"].get("ANTHROPIC_BASE_URL").is_none());
+    }
+
+    #[test]
+    fn restore_hook_is_idempotent_and_removable() {
+        let mut s = json!({});
+        set_restore_hook(&mut s, 7878, "tok");
+        set_restore_hook(&mut s, 7878, "tok"); // second install must not duplicate
+        let pre = s["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 1);
+        assert_eq!(pre[0]["matcher"], PRETOOLUSE_MATCHER);
+        assert!(pre[0]["hooks"][0]["command"]
+            .as_str()
+            .unwrap()
+            .contains("psk restore --hook --port 7878 --auth tok"));
+
+        remove_restore_hook(&mut s);
+        assert!(s["hooks"]["PreToolUse"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn preserves_unrelated_hooks() {
+        let mut s = json!({
+            "hooks": { "PreToolUse": [
+                { "matcher": "Read", "hooks": [{"type":"command","command":"other-tool"}] }
+            ]}
+        });
+        set_restore_hook(&mut s, 1234, "x");
+        remove_restore_hook(&mut s);
+        let pre = s["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre.len(), 1);
+        assert_eq!(pre[0]["matcher"], "Read");
+    }
 }

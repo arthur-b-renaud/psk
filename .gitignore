@@ -4,13 +4,5 @@ Cargo.lock
 *.swo
 .DS_Store
 
-# Python data pipeline
-.venv/
-__pycache__/
-*.pyc
-
 # Git worktrees created by tooling
 /.claude/worktrees/
-
-# Model weights (downloaded locally, never committed)
-/models/

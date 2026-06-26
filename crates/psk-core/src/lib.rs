@@ -2,11 +2,13 @@ pub mod pipeline;
 pub mod policy;
 pub mod span;
 pub mod stats;
+pub mod vault;
 
 pub use pipeline::Pipeline;
 pub use policy::{RedactionAction, RedactionPolicy};
 pub use span::{EntityType, Span};
 pub use stats::StatsCollector;
+pub use vault::Vault;
 
 /// A recognizer detects entities in text and returns spans.
 pub trait Recognizer: Send + Sync {

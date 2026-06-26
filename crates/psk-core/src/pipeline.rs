@@ -1,7 +1,9 @@
 use crate::policy::RedactionPolicy;
 use crate::span::Span;
 use crate::stats::StatsCollector;
+use crate::vault::Vault;
 use crate::Recognizer;
+use std::sync::Arc;
 
 /// The detection + redaction pipeline.
 ///
@@ -11,6 +13,9 @@ pub struct Pipeline {
     recognizers: Vec<Box<dyn Recognizer>>,
     policy: RedactionPolicy,
     stats: StatsCollector,
+    /// Optional reversible-tokenization vault. Present in the daemon (so secrets can be restored
+    /// into local writes); absent for one-shot `psk scan` (tokenize degrades to replace).
+    vault: Option<Arc<Vault>>,
 }
 
 impl Pipeline {
@@ -19,7 +24,19 @@ impl Pipeline {
             recognizers: Vec::new(),
             policy,
             stats: StatsCollector::new(),
+            vault: None,
         }
+    }
+
+    /// Attach a reversible-tokenization vault, enabling [`crate::RedactionAction::Tokenize`].
+    pub fn with_vault(mut self, vault: Arc<Vault>) -> Self {
+        self.vault = Some(vault);
+        self
+    }
+
+    /// The vault backing this pipeline, if any.
+    pub fn vault(&self) -> Option<&Arc<Vault>> {
+        self.vault.as_ref()
     }
 
     /// Add a recognizer to the pipeline.
@@ -71,7 +88,9 @@ impl Pipeline {
             result.push_str(&text[last_end..span.start]);
             // Append redacted replacement
             let matched = &text[span.start..span.end];
-            let replacement = self.policy.redact(&span.entity, matched);
+            let replacement = self
+                .policy
+                .redact(&span.entity, matched, self.vault.as_deref());
             result.push_str(&replacement);
             last_end = span.end;
         }

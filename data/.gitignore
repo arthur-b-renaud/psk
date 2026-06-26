@@ -1,6 +1,0 @@
-# Heavy downloads and derived data are not committed.
-raw/
-processed/
-# eval/ holds hand-checked synthetic prompts — commit those deliberately, not via bulk add.
-*.parquet
-*.arrow

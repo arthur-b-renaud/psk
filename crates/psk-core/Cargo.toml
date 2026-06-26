@@ -13,6 +13,7 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 once_cell = { workspace = true }
 dirs = { workspace = true }
+regex = { workspace = true }
 sha2 = { workspace = true }
 chrono = { workspace = true }
 tracing = { workspace = true }
