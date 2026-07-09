@@ -130,6 +130,10 @@ fn cmd_proxy() -> Result<std::process::ExitCode> {
     // The last line before it blocks: the mistake to prevent is Ctrl-C'ing this, thinking the
     // command finished. Say plainly that it keeps running here.
     println!("Leave this terminal open — the proxy runs here. Press Ctrl-C to stop.");
+    // Flush now: the process then blocks in `serve` forever, and piped/redirected stdout is
+    // block-buffered, so without this the banner would never appear in `psk proxy > log`.
+    use std::io::Write as _;
+    let _ = std::io::stdout().flush();
 
     // A dedicated runtime rather than #[tokio::main], so cold startup of the *other* subcommands
     // (gain, init, hook) pays nothing for tokio.
