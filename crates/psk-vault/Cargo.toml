@@ -1,0 +1,16 @@
+[package]
+name = "psk-vault"
+description = "Bijective real<->fake map with deterministic, format-preserving fake generation."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+aho-corasick.workspace = true # multi-pattern exact restore; see restore.rs
+getrandom.workspace = true   # 32 salt bytes on first run; no C toolchain
+hmac.workspace = true        # deterministic fake derivation (brief 7a)
+sha2.workspace = true
+thiserror.workspace = true   # library-crate errors (brief 13)
+zeroize.workspace = true     # transient buffers only; see the honesty block in lib.rs

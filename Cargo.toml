@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/psk-vault",
+    "crates/psk-secrets",
+    "crates/psk-verifiers",
+    "crates/psk-core",
+    "crates/psk-proxy",
+    "crates/psk-init",
+    "crates/psk-tui",
+    "crates/psk-cli",
+]
+
+# Inherited by every crate via `version.workspace = true` etc., so metadata is
+# declared once instead of eight times.
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/arthur-b-renaud/psk"
+rust-version = "1.85"
+
+# One version per dependency for the whole workspace. Crates opt in with
+# `foo.workspace = true`, so two crates can never disagree on a version.
+[workspace.dependencies]
+aho-corasick = "1"
+anyhow = "1"
+getrandom = "0.3"
+hmac = "0.12"
+sha2 = "0.10"
+thiserror = "2"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+
+[profile.release]
+lto = "thin"
+strip = true
