@@ -1,8 +1,0 @@
-/target
-Cargo.lock
-*.swp
-*.swo
-.DS_Store
-
-# Git worktrees created by tooling
-/.claude/worktrees/
