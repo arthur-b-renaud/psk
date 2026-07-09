@@ -43,7 +43,7 @@ impl Engine {
         }
     }
 
-    /// Add a detector. The M2 seam: an NER recognizer plugs in here without the proxy noticing.
+    /// Add a detector. New recognizers plug in here without the proxy noticing.
     pub fn with_recognizer(mut self, r: Box<dyn Recognizer>) -> Self {
         self.recognizers.push(r);
         self

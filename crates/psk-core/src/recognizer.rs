@@ -1,9 +1,8 @@
 //! The `Recognizer` seam (brief §5).
 //!
 //! A *trait* is Rust's interface: any type implementing it can be used wherever a `Recognizer` is
-//! expected. The regex layer is one implementation; the ONNX/GLiNER NER layer planned for M2 will
-//! be another. The proxy and the engine only ever see this trait, so adding a detector never
-//! touches them.
+//! expected. The regex layer is one implementation; another detector could be a second. The proxy
+//! and the engine only ever see this trait, so adding a detector never touches them.
 
 use psk_vault::SecretKind;
 
@@ -11,8 +10,8 @@ use psk_vault::SecretKind;
 ///
 /// The brief writes this as `Match { start, end, kind, value: &str }`. The borrowed `value` is
 /// dropped here: it would tie every `Match` to the lifetime of the haystack, which forces a
-/// lifetime parameter through `Recognizer`, `Engine`, and every future NER implementation, in
-/// exchange for a slice the caller can recover with `&text[m.start..m.end]`.
+/// lifetime parameter through `Recognizer`, `Engine`, and every implementation, in exchange for a
+/// slice the caller can recover with `&text[m.start..m.end]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Match {
     pub start: usize,

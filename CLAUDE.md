@@ -483,21 +483,7 @@ a **random per-session salt**. It is not a starting point. Random salts corrupt 
 proxy restart, for the reason in §4, and opaque tokens destroy the LLM's ability to reason about
 the value's shape. Only the checksum validators were conceptually worth carrying forward.
 
-## 10. M2+ seams
-
-Left clean, not implemented:
-
-- **NER recognizer.** `psk-core`'s `Recognizer` trait takes a second implementation (ONNX/GLiNER);
-  the regex layer is just the first. Training corpora sit untracked in `data/` (ai4privacy).
-- **PII layer.** New `SecretKind` variants plus their fake templates in `psk-vault/src/kind.rs`.
-- **OpenAI-compatible proxy.** A second route in `psk-proxy`; the substitution surfaces differ, the
-  vault does not.
-- **External corpus.** `corpus/` will vendor gitleaks' test data (or an equivalent public secrets
-  benchmark), license respected, provenance recorded here. `psk test` reports precision/recall
-  against it with an explicit floor (≥ 0.95 precision on M1 rule kinds). Self-graded fixtures alone
-  prove nothing to an open-source audience.
-
-## 11. Conventions
+## 10. Conventions
 
 - `thiserror` in library crates, `anyhow` at the binary boundary. No `.unwrap()` in library paths
   reachable from user input.
