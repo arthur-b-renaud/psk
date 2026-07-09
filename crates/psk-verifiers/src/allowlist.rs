@@ -30,6 +30,69 @@ pub fn is_lockfile_hash(s: &str) -> bool {
         .any(|p| s.starts_with(p))
 }
 
+/// A vendor's documented placeholder credential.
+///
+/// AWS ends its documentation keys with `EXAMPLE` (`AKIAIOSFODNN7EXAMPLE`), and gitleaks
+/// allowlists exactly this suffix. Seven characters is long enough that a real key ending in
+/// `EXAMPLE` by chance is not worth worrying about.
+pub fn is_vendor_placeholder(s: &str) -> bool {
+    s.ends_with("EXAMPLE")
+}
+
+/// Credentials that are *published*, real-format, and therefore not secrets.
+///
+/// The canonical case is the set of Firebase example API keys committed to
+/// `firebase/firebase-android-sdk` — they have the right shape and high entropy, so no gate but a
+/// literal list can reject them. gitleaks maintains the same list. AWS's documentation secret key
+/// is here for the same reason: it appears in thousands of tutorials.
+///
+/// Stored as **SHA-256 digests**, not literals, for two reasons: PSK's own source stays free of
+/// strings that trip credential scanners, and the list reads as what it is — an opaque set of
+/// known-public values. Provenance is in `CLAUDE.md`.
+///
+/// This is a per-vendor allowlist, not a general solution, and it will not scale. It exists
+/// because these particular values genuinely are everywhere.
+pub fn is_published_example_key(s: &str) -> bool {
+    use sha2::{Digest, Sha256};
+
+    /// Sorted, so `binary_search` works and a duplicate is obvious in review.
+    const PUBLISHED: [&str; 17] = [
+        "0b476bdf9acf2123d547b5ae76f1e59884d8ec9553ee0c47e9f31fd4768f3f3c",
+        "2037abcaffb2b77785da716cf7ccff4ff4d00c4ea930db0167b7d71f50af7eb4",
+        "27a9a42931dff7eb2f8434e20a9bce976ea364e7bee49187f19d5cfeca9c7045",
+        "37f8f09bdf12c2f2eae4ead7273a62ddb0c23459cbf902892f282b57f7ed6619",
+        "3a8b61d0f636b007840c0d40ba12bcf48465dc054cdc1a68704a33521d84b665",
+        "3f370c9dd8225c63b5c77de1f785edc9712958f18bb612d5fa2e0ae33aeca682",
+        "49f777db995e8260da7ca9ffdf0c08d66f0453e97ec967018baf2cdfe3b582d0",
+        "4c98242dcadc8b29005c6b4aad526552d5ea1842149154c0694adeec75847583",
+        "78314b11be2e581549ac1c4f616563fad3fdf0c3b71678f6e2299182080e0598",
+        "8731261cb72d86267a32a532ebd3df429e2144e5e4ced7e13568bc9e6c8fb1b1",
+        "a19f89ab3555eac10c40741f6df79ecf0935998f15569f8db9d67bce0181fff6",
+        "a6c814bc555ae62c7bd8b58ec07bf559c7ed3a009976a1e0acc9cef0d4473b41",
+        "dc0fcf046c61640cbd1e8b999ada3262d722c2ca4bf42dceac999020ffdbb614",
+        "e4a5542bb7fd7b67e943c71ad29c34b5972c9840597e7eda53e666f44d5da0b9",
+        "ea9bb1082cf95663f5faca23b8b15ef2aa0fce0a5c6df9c32dcb85b2e0a4513d",
+        "eb540d2b6ee2a0a47c5779bc8a0141784c6b753840d4c6f4e2428a6e86e9e0b1",
+        "f56e323494a6ffc2064e7a955908957d84f0755e5f975dabd64328d0359a8f7c",
+    ];
+
+    let digest = format!("{:x}", Sha256::digest(s.as_bytes()));
+    PUBLISHED.binary_search(&digest.as_str()).is_ok()
+}
+
+/// A digit run with too few distinct digits to be a real account number.
+///
+/// `000000000000000000` is Luhn-valid — every weighted digit is zero, so the sum is zero, which is
+/// divisible by ten. It is also a Discord snowflake placeholder, and the corpus caught us
+/// substituting it as a credit card. Luhn alone cannot reject a placeholder; variety can.
+pub fn is_placeholder_number(digits: &[u8]) -> bool {
+    let mut seen = [false; 10];
+    for &d in digits.iter().filter(|d| d.is_ascii_digit()) {
+        seen[(d - b'0') as usize] = true;
+    }
+    seen.iter().filter(|s| **s).count() < 4
+}
+
 /// Does `s` parse as an IP address at all?
 ///
 /// The IPv4/IPv6 regexes match shapes (`999.999.999.999`, a version string, a time range) that are

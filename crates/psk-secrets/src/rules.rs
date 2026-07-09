@@ -28,6 +28,16 @@ const fn rule(kind: SecretKind, pattern: &'static str) -> Rule {
     }
 }
 
+/// A rule whose secret is capture group 1, because the pattern must *consume* a delimiter it does
+/// not want to substitute.
+const fn rule_group1(kind: SecretKind, pattern: &'static str) -> Rule {
+    Rule {
+        kind,
+        pattern,
+        group: 1,
+    }
+}
+
 /// Ordered only for readability; overlap between rules is resolved by longest-match-wins in
 /// `psk-core`, not by position in this table.
 pub static RULES: &[Rule] = &[
@@ -37,21 +47,64 @@ pub static RULES: &[Rule] = &[
         SecretKind::AwsAccessKeyId,
         r"\b(?:AKIA|ASIA|ABIA|ACCA)[A-Z0-9]{16}\b",
     ),
-    rule(SecretKind::GoogleApiKey, r"\bAIza[A-Za-z0-9_-]{35}\b"),
+    // A Google API key may end in `-`, which is not a word character, so a trailing `\b` can never
+    // match there and the key is missed. But dropping the boundary entirely makes the rule match a
+    // 39-character *prefix* of a longer token, and substituting that corrupts it. Both failures
+    // came from the corpus.
+    //
+    // The fix is an explicit right delimiter — a non-token character or end of input — consumed by
+    // the pattern and excluded from the capture. `regex` has no lookahead by design (it is what
+    // buys linear-time matching), so group 1 carries the secret.
+    rule_group1(
+        SecretKind::GoogleApiKey,
+        r"\b(AIza[A-Za-z0-9_-]{35})(?:[^A-Za-z0-9_-]|$)",
+    ),
     // ---- Vendor tokens -----------------------------------------------------------------------
     rule(SecretKind::GithubPat, r"\bgh[oprsu]_[A-Za-z0-9]{36}\b"),
-    // Must be tried against the same text as OpenAI's rule; `sk-ant-` cannot match the OpenAI
-    // pattern because `-` is absent from its body class, so the two never fight.
-    rule(SecretKind::AnthropicKey, r"\bsk-ant-[A-Za-z0-9_-]{16,}"),
+    // The real format, not `sk-ant-` plus anything: 93 body characters and an `AA` suffix. The
+    // loose version matched truncated and wrong-suffix keys that gitleaks lists as negatives.
+    // `sk-ant-` cannot match the OpenAI pattern (`-` is absent from its body class), so the two
+    // rules never fight.
+    rule(
+        SecretKind::AnthropicKey,
+        r"\bsk-ant-(?:api03|admin01)-[A-Za-z0-9_-]{93}AA\b",
+    ),
     rule(SecretKind::OpenAiKey, r"\bsk-[A-Za-z0-9]{32,}\b"),
-    rule(SecretKind::SlackToken, r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
-    rule(SecretKind::StripeKey, r"\b[sr]k_live_[A-Za-z0-9]{16,}\b"),
+    rule(
+        SecretKind::StripeKey,
+        r"\b[sr]k_(?:live|prod|test)_[A-Za-z0-9]{10,99}\b",
+    ),
+    // ---- Slack, ported from gitleaks -----------------------------------------------------------
+    // Slack tokens carry *structure*, not just a prefix. A single `xox[baprs]-<anything>` rule
+    // matched every `xoxb-abcdef-abcdef` placeholder in the corpus. Each variant below encodes the
+    // segment shape of a real token; all map to one `SlackToken` kind because PSK does not need to
+    // tell a bot token from a user token in order to hide it.
+    rule(
+        SecretKind::SlackToken,
+        r"xoxb-[0-9]{10,13}-[0-9]{10,13}[A-Za-z0-9-]*",
+    ),
+    rule(
+        SecretKind::SlackToken,
+        r"xox[pe](?:-[0-9]{10,13}){3}-[A-Za-z0-9-]{28,34}",
+    ),
+    rule(
+        SecretKind::SlackToken,
+        r"(?i)xapp-\d-[A-Z0-9]+-\d+-[a-z0-9]+",
+    ),
+    rule(
+        SecretKind::SlackToken,
+        r"xoxb-[0-9]{8,14}-[A-Za-z0-9]{18,26}",
+    ),
+    rule(SecretKind::SlackToken, r"xox[ar]-(?:\d-)?[0-9a-zA-Z]{8,48}"),
+    rule(SecretKind::SlackToken, r"xox[os]-\d+-\d+-\d+-[a-fA-F\d]+"),
     // ---- Structured credentials --------------------------------------------------------------
-    // Three base64url segments. The `eyJ` anchor is `{"` base64-encoded: a JWT header always
-    // starts with a JSON object, so this is far tighter than "three dot-separated blobs".
+    // Ported from gitleaks. The `ey` anchor is `{"` base64-encoded: both the header and the payload
+    // of a JWT are JSON objects, so requiring `ey` on each is far tighter than "dot-separated
+    // blobs". The signature is **optional** — an `alg: none` token has an empty third segment, and
+    // it still carries claims worth hiding.
     rule(
         SecretKind::Jwt,
-        r"\beyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}",
+        r"\bey[A-Za-z0-9]{17,}\.ey[A-Za-z0-9/\\_-]{17,}\.(?:[A-Za-z0-9/\\_-]{10,}={0,2})?",
     ),
     // ---- Key material ------------------------------------------------------------------------
     // Ordered before the generic PEM rule so longest-match-wins picks the more specific kind.
@@ -65,14 +118,21 @@ pub static RULES: &[Rule] = &[
         SecretKind::GcpServiceAccountKey,
         r"-----BEGIN PRIVATE KEY-----(?:\\n[A-Za-z0-9+/=]+)+\\n-----END PRIVATE KEY-----",
     ),
+    // Ported from gitleaks. Two things the hand-rolled version got wrong: it did not cover
+    // `PGP PRIVATE KEY BLOCK`, and it happily matched an armoured block whose body was the word
+    // `anything`. The `{64,}` body minimum is what makes it a key rather than a shape.
     rule(
         SecretKind::PrivateKeyBlock,
-        r"(?s)-----BEGIN (?:RSA |EC |DSA |PGP |ENCRYPTED )?PRIVATE KEY-----.*?-----END (?:RSA |EC |DSA |PGP |ENCRYPTED )?PRIVATE KEY-----",
+        r"(?i)-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----[\s\S-]{64,}?KEY(?: BLOCK)?-----",
     ),
     // ---- Shape-only generics; these live or die on `psk-verifiers` ---------------------------
     // 40 characters of base64 alphabet. Also the shape of a git SHA-1, a truncated hash, and a
     // hundred other things — the verifier's pure-hex exclusion and entropy gate do the real work.
-    rule(SecretKind::AwsSecretKey, r"\b[A-Za-z0-9/+=]{40}\b"),
+    //
+    // `=` is excluded from the class on purpose. With it, the rule swallowed the assignment in
+    // `csrf-token=Mj2qykJO...` and reported a span starting at `token=`. AWS secret keys are
+    // exactly 40 characters of `[A-Za-z0-9/+]` with no padding.
+    rule(SecretKind::AwsSecretKey, r"\b[A-Za-z0-9/+]{40}\b"),
     // ---- Financial, checksum-gated -----------------------------------------------------------
     // 13-19 digits with optional single spaces or dashes. Luhn decides.
     rule(SecretKind::CreditCard, r"\b\d(?:[ -]?\d){12,18}\b"),

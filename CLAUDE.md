@@ -174,6 +174,82 @@ are not addresses (`999.999.999.999`, `1.2.3.4.5`, a version string). A verifier
 Note also that `1.2.3.4` parses as a routable address, so with the network rules enabled a version
 string is substituted. That is one more reason those rules ship off.
 
+### The external corpus, and what it corrected
+
+`corpus/` is **not** in this repository. It lives at
+[`psk-corpus`](https://github.com/arthur-b-renaud/psk-corpus) and is fetched by
+`scripts/fetch-corpus.sh` into a gitignored `corpus/`. A secrets benchmark is thousands of
+secret-shaped strings; keeping it out lets push protection stay enabled here, keeps MIT data
+unmixed with Apache-2.0 source, and leaves `cargo test` hermetic for a fresh clone.
+
+- Source: gitleaks (**MIT**) at commit `4c232b5014f7618360bd992b4c489cb055881c6b`.
+- **trufflehog is AGPL-3.0** and must never be vendored into this Apache-2.0 project.
+- 559 rows, 268 true positives (71 mapped to an M1 kind), 291 false positives.
+
+Without `corpus/`, `cargo test -p psk-secrets --test corpus` prints a hint and passes.
+`PSK_REQUIRE_CORPUS=1` makes absence a hard failure; CI sets it.
+
+**gitleaks' `fps` are per-rule negatives**, meaning "rule R must not match this" — *not* "this string
+contains no secret". `anthropic-api-key`'s negatives include a valid Anthropic *admin* key, and
+`curl-auth-header`'s contain a genuine JWT. Scoring them as universal negatives gives wrong numbers.
+So precision is scored at the **rule level** — for a rule mapping to kind K, does *our detector for
+K* fire on that rule's negatives? Detections of other kinds are reported as "collateral" and never
+gated.
+
+**The floor is enforced per kind, not on the pooled total.** Pooling hides regressions: with 71
+pooled true positives, deleting the entire `AwsAccessKeyId` verifier still scores 71/73 = 0.973
+overall. Per-kind it scores 0.333 and fails. A gate that cannot fail proves nothing — there is a
+manual check for this in the plan's verification steps.
+
+**Current numbers: precision 1.0000, recall 1.0000 (71/71).** Two known, ungated collateral
+detections remain, both correct-ish and both documented in the test output: a real JWT inside a
+`curl-auth-header` negative (finding it is right), and the shape-only `AwsSecretKey` rule matching a
+40-character base64 line inside a PGP *public* key block (inherent to a generic rule; gitleaks has
+the same problem, which is why it requires keyword context).
+
+Honest caveat: **the rules were tuned against this corpus in the same change that introduced it.**
+71 mapped true positives is a small sample, and 1.0/1.0 reflects that as much as it reflects
+quality. The corpus's value is as a *regression* gate and as an outside opinion, not as proof of
+general accuracy.
+
+#### What it corrected
+
+The corpus refuted a design assumption stated in an earlier version of `psk-verifiers`: *"the
+remaining kinds carry a vendor-issued prefix; the prefix is the evidence."* It is not.
+`ghp_xxxxxxxx…`, `AIzaaaaaaa…`, `AKIAXXXXXXXXXXXXXXXX`, and `xoxb-abcdef-abcdef` all carry genuine
+vendor prefixes and are all placeholders. gitleaks pairs every one of those rules with an entropy
+threshold; now so do we, measured on the token **body** after the fixed prefix, whose zero entropy
+would otherwise drag a real key's score down.
+
+Six real bugs, each with a regression test:
+
+1. `AKIAIOSFODNN7EXAMPLE` and `AKIAXXXXXXXXXXXXXXXX` were substituted → entropy gate on the body,
+   plus `is_vendor_placeholder` (trailing `EXAMPLE`).
+2. `ghp_` + 36 `x`s was substituted → entropy gate.
+3. A Google API key ending in `-` was **missed**, because `\b` cannot match after a non-word
+   character. Removing the boundary then made the rule match a 39-character *prefix* of a longer
+   token — corrupting it. Fixed with an explicit right delimiter consumed outside capture group 1.
+   (`regex` has no lookahead by design; that is what buys linear-time matching.)
+4. `-----BEGIN PRIVATE KEY-----\nanything\n-----END PRIVATE KEY-----` was substituted, and
+   `PGP PRIVATE KEY BLOCK` was missed → ported gitleaks' rule, whose `{64,}` body minimum is what
+   makes it a key rather than a shape.
+5. `csrf-token=Mj2qykJO…` matched `AwsSecretKey` **starting at `token=`**, because `=` was in the
+   character class → removed; AWS secret keys have no padding.
+6. `000000000000000000` was substituted as a credit card. It is **Luhn-valid** — every weighted
+   digit is zero, and zero is divisible by ten. Luhn cannot reject a placeholder; digit variety can
+   (`is_placeholder_number`).
+
+Slack was rewritten from one `xox[baprs]-<anything>` rule into gitleaks' six structured regexes,
+because Slack tokens carry segment structure, not just a prefix. `AnthropicKey` was tightened to the
+real format (93 body characters, `AA` suffix); the loose version matched truncated and wrong-suffix
+keys. `StripeKey` gained `prod` and `test` variants.
+
+`is_published_example_key` holds **SHA-256 digests** of 17 real-format, publicly published
+credentials — the 16 Firebase SDK example keys gitleaks allowlists, plus AWS's documentation secret
+key. Digests rather than literals so PSK's own source does not carry strings that trip credential
+scanners. It is a per-vendor allowlist, it does not scale, and it exists only because those specific
+values are genuinely everywhere.
+
 ### Overlap resolution (`psk-core`)
 
 Overlap between rules is normal, not exceptional: an Anthropic key's 40-character tail genuinely
@@ -286,14 +362,35 @@ Justified additions beyond the brief's §11 list:
   would be a much larger dependency for one call.
 - **`futures-util`, `tokio-stream`, `bytes`** — streaming plumbing for the proxy's SSE path.
 - **`toml`** — reads `~/.psk/config.toml`, which the brief specifies.
+- **`sha2`** in `psk-verifiers` — digests for the published-example-key allowlist (§6).
 
-**`aws-lc-rs`, via `reqwest` → `rustls`: a deviation worth stating.** The brief says "nothing that
-needs a system C library in M1". `aws-lc-rs` does not need a *system* library — it vendors its C
-sources — but it does compile C during the build, so `cargo install psk-cli` needs a C compiler
-present. In practice every machine with a working Rust toolchain has one (the linker path requires
-it), so `cargo install` still "just works". If that ever becomes a problem, `reqwest`'s
-`rustls-no-provider` feature plus an explicit `ring` provider removes the C entirely. Recorded here
-so the trade-off is a choice rather than an accident.
+### The dependency rule, restated
+
+The brief's §11 says "nothing that needs a system C library" and §14 says "do not add … any
+C-linked dependency". **Read literally, that is unsatisfiable for an HTTPS client**, and PSK must
+speak HTTPS to `api.anthropic.com`. Every viable `rustls` provider compiles C or assembly:
+
+| provider | C files | asm | maturity |
+| --- | --- | --- | --- |
+| `aws-lc-rs` (current) | 412 | — | rustls' default, audited |
+| `ring` | 17 | 128 | mature |
+| `rustls-rustcrypto` | 0 | 0 | `0.0.2-alpha` |
+| `graviola` | 0 | yes | young, x86_64/aarch64 only |
+
+So the rule is restated around the thing it was actually protecting:
+
+> **No preinstalled system library, no `pkg-config`, no C++ toolchain, no `bindgen`.** Vendored C
+> compiled by `cc` inside a crypto provider is acceptable, because the Rust linker already implies a
+> C compiler. Hyperscan stays banned for exactly this reason — it needs `libhs` installed,
+> `pkg-config` to find it, and a C++ toolchain — not by analogy.
+
+Verified: `aws-lc-sys` declares **no `[build-dependencies]`**, vendors its C, and uses its
+`cc_builder` (cmake only as a fallback on unsupported targets). `cargo tree -p psk-proxy -e build`
+shows no `cmake`, `bindgen`, or `openssl-sys`. `cargo install psk-cli` works with a Rust toolchain
+and nothing else.
+
+Escape hatch, if this ever needs revisiting: `reqwest`'s `rustls-no-provider` feature plus an
+explicit `ring` provider cuts the vendored C from 412 files to 17.
 
 Deliberately *not* used, despite the earlier implementation at `94aa2f4` pulling them in:
 `luhn3`, `iban`, `card_validate`. Luhn and mod-97 are ~15 lines each and PSK needs to both verify

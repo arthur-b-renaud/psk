@@ -877,9 +877,11 @@ dependencies = [
 name = "psk-secrets"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "psk-vault",
  "psk-verifiers",
  "regex",
+ "serde_json",
 ]
 
 [[package]]
@@ -903,6 +905,7 @@ name = "psk-verifiers"
 version = "0.1.0"
 dependencies = [
  "psk-vault",
+ "sha2",
 ]
 
 [[package]]

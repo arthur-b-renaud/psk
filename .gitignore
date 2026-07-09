@@ -1,3 +1,6 @@
 /target
 # ai4privacy corpora for the M2 NER layer; not part of the M1 build.
 /data
+
+# Fetched by scripts/fetch-corpus.sh from the psk-corpus repository.
+/corpus

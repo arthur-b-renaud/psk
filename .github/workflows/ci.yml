@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Brief §12: build and test on Linux and macOS with no system deps beyond a Rust toolchain.
+  # Deliberately *without* the corpus, so a hermetic, offline `cargo test` stays a hard guarantee.
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  # The external-corpus gate. Separate job: it needs the network, and its failure means "detection
+  # regressed", which is a different signal from "the build is broken".
+  corpus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: ./scripts/fetch-corpus.sh
+      - name: precision and recall against the gitleaks corpus
+        env:
+          PSK_REQUIRE_CORPUS: "1"
+        run: cargo test -p psk-secrets --test corpus -- --nocapture

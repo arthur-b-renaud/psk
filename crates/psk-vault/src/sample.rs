@@ -29,8 +29,12 @@ pub fn for_kind(kind: SecretKind) -> String {
 
         // 40 base64-alphabet characters. Deliberately not pure hex: a 40-char hex string is a git
         // SHA-1, which the detection rules must never treat as a secret (brief §6b).
+        //
+        // Deliberately *not* AWS's own `wJalrXUtnFEMI/...EXAMPLEKEY`: that value is a published
+        // documentation credential and now sits in the `is_published_example_key` allowlist, so it
+        // would be rejected by its own verifier.
         SecretKind::AwsSecretKey => {
-            ["wJalrXUtnFEMI", "/K7MDENG/bPx", "RfiCYEXAMPLE", "KEY"].concat()
+            ["kQ7mZr4Xb2Nv", "8Tj1Ls6Yc3Wd", "9Fp0Hg5Uu2Ae", "4Rn7"].concat()
         }
 
         // 4-char prefix + 36 characters.
@@ -38,13 +42,16 @@ pub fn for_kind(kind: SecretKind) -> String {
             ["ghp", "_", "16C7e42F292c", "6912E7710c83", "8347Ae178B4a"].concat()
         }
 
+        // The real format: `sk-ant-api03-` + 93 body characters + the literal `AA` suffix. The rule
+        // checks all of it, so a sample that merely *starts* like a key is not detected.
         SecretKind::AnthropicKey => [
             "sk-",
             "ant-",
             "api03-",
-            "Zm9vYmFyYmF6cXV4",
-            "Y29ycmVjdGhvcnNl",
-            "YmF0dGVy",
+            "Zm9vYmFyYmF6cXV4Y29ycmVjdGhvcnNl", // 32
+            "YmF0dGVyeXN0YXBsZXh5enp5MDEyMzQ1", // 32
+            "Njc4OWFiY2RlZmdoaWprbG1ub3Bxc",    // 29  (32 + 32 + 29 = 93)
+            "AA",
         ]
         .concat(),
 
@@ -88,14 +95,16 @@ pub fn for_kind(kind: SecretKind) -> String {
 
         SecretKind::BearerToken => ["AbCdEf0123456789", "AbCdEf0123456789"].concat(),
 
-        // Truncated PEM bodies: enough armour and base64 to exercise the shape, no actual key.
-        SecretKind::PrivateKeyBlock => pem_block("PRIVATE KEY", "MIIEvQIBADANBgkq", "\n"),
-        SecretKind::SshPrivateKey => pem_block("OPENSSH PRIVATE KEY", "b3BlbnNzaC1rZXktdjEA", "\n"),
+        // Truncated PEM bodies, but never below the 64 base64 characters the detection rule
+        // requires: an armoured block whose body is one short word is not a key, and the rule
+        // (ported from gitleaks) now says so.
+        SecretKind::PrivateKeyBlock => pem_block("PRIVATE KEY", &pem_body(), "\n"),
+        SecretKind::SshPrivateKey => pem_block("OPENSSH PRIVATE KEY", &pem_body(), "\n"),
 
         // A GCP service-account key is a PEM inside a JSON string, so its newlines are the two
         // characters `\` `n`. The fake must preserve that escaping or the agent's own credentials
         // file stops parsing.
-        SecretKind::GcpServiceAccountKey => pem_block("PRIVATE KEY", "MIIEvQIBADANBgkq", "\\n"),
+        SecretKind::GcpServiceAccountKey => pem_block("PRIVATE KEY", &pem_body(), "\\n"),
 
         // A published Luhn-valid test number. Not in any live BIN.
         SecretKind::CreditCard => ["4539", " ", "1488", " ", "0343", " ", "6467"].concat(),
@@ -110,6 +119,16 @@ pub fn for_kind(kind: SecretKind) -> String {
         SecretKind::IpV6 => "2606:4700:4700::1111".to_string(),
         SecretKind::Email => "alice@corp.internal".to_string(),
     }
+}
+
+/// 77 inert base64 characters: over the detection rule's 64-character minimum, well under a real
+/// key's length. A shorter body would make every PEM sample undetectable.
+fn pem_body() -> String {
+    [
+        "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC",
+        "7VJTUt9Us8cKjMzEfYyjiWA4R4",
+    ]
+    .concat()
 }
 
 /// `sep` is `"\n"` for a file on disk, or the two-character escape `"\\n"` for a PEM embedded in

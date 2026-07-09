@@ -50,6 +50,8 @@ pub fn verify(kind: SecretKind, value: &str, cfg: &VerifierConfig) -> bool {
         SecretKind::AwsSecretKey => {
             !allowlist::is_git_sha(value)
                 && !allowlist::is_lockfile_hash(value)
+                // AWS's own documentation secret key appears in thousands of tutorials.
+                && !allowlist::is_published_example_key(value)
                 // Beyond `[0-9a-f]`: the base64 alphabet must actually be used, or this is hex
                 // wearing a base64 costume (brief §6b).
                 && value.chars().any(|c| !c.is_ascii_hexdigit())
@@ -63,9 +65,29 @@ pub fn verify(kind: SecretKind, value: &str, cfg: &VerifierConfig) -> bool {
                 && entropy::passes_entropy_gate(value, cfg.min_bits_per_char)
         }
 
+        // Prefixed vendor tokens. The prefix narrows the search; it is *not* the evidence.
+        //
+        // The gitleaks corpus refuted the earlier assumption here. `ghp_xxxxxxxx…`,
+        // `AIzaaaaaaaa…`, and `AKIAXXXXXXXXXXXXXXXX` all carry a genuine vendor prefix and are all
+        // placeholders. gitleaks pairs every one of these rules with an entropy threshold, and so
+        // do we: the gate runs on the token *body*, after the fixed prefix, whose zero entropy
+        // would otherwise drag a real key's score down.
+        SecretKind::AwsAccessKeyId => {
+            !allowlist::is_vendor_placeholder(value)
+                && entropy::passes_entropy_gate(body_after(value, 4), cfg.min_bits_per_char)
+        }
+        SecretKind::GithubPat => {
+            entropy::passes_entropy_gate(body_after(value, 4), cfg.min_bits_per_char)
+        }
+        SecretKind::GoogleApiKey => {
+            !allowlist::is_published_example_key(value)
+                && entropy::passes_entropy_gate(body_after(value, 4), cfg.min_bits_per_char)
+        }
+
         SecretKind::CreditCard => {
             let digits: Vec<u8> = value.bytes().filter(u8::is_ascii_digit).collect();
-            luhn_valid(&digits)
+            // Luhn is necessary but not sufficient: an all-zero run passes it.
+            luhn_valid(&digits) && !allowlist::is_placeholder_number(&digits)
         }
 
         SecretKind::Iban => iban_valid(value),
@@ -78,14 +100,12 @@ pub fn verify(kind: SecretKind, value: &str, cfg: &VerifierConfig) -> bool {
 
         SecretKind::Email => !allowlist::is_reserved_email(value),
 
-        // The remaining kinds carry a vendor-issued prefix (`AKIA`, `ghp_`, `sk-ant-`, `xoxb-`,
-        // `-----BEGIN …`). The prefix *is* the evidence; an entropy gate on top would only reject
-        // real-but-unlucky keys. A JWT's three-segment structure plays the same role.
-        SecretKind::AwsAccessKeyId
-        | SecretKind::GithubPat
-        | SecretKind::AnthropicKey
+        // The remaining kinds are carried by their *structure*, not merely a prefix, and the regex
+        // already encodes it: an Anthropic key's exact 93-character body and `AA` suffix, a JWT's
+        // three base64url segments, a Slack token's segment lengths, a PEM block's 64-character
+        // minimum body. A further gate here would only reject real-but-unlucky credentials.
+        SecretKind::AnthropicKey
         | SecretKind::OpenAiKey
-        | SecretKind::GoogleApiKey
         | SecretKind::GcpServiceAccountKey
         | SecretKind::SlackToken
         | SecretKind::StripeKey
@@ -93,6 +113,14 @@ pub fn verify(kind: SecretKind, value: &str, cfg: &VerifierConfig) -> bool {
         | SecretKind::PrivateKeyBlock
         | SecretKind::SshPrivateKey => true,
     }
+}
+
+/// The token body: everything after a fixed, zero-entropy vendor prefix of `n` characters.
+///
+/// Measuring entropy over the whole token would count `AKIA` and `ghp_` as evidence of randomness
+/// they do not have, penalising short keys.
+fn body_after(value: &str, n: usize) -> &str {
+    value.get(n..).unwrap_or(value)
 }
 
 #[cfg(test)]
@@ -165,6 +193,80 @@ mod tests {
         assert!(verify(SecretKind::IpV4, "8.8.8.8", &c));
         assert!(verify(SecretKind::IpV6, "2606:4700:4700::1111", &c));
         assert!(verify(SecretKind::Email, "alice@corp.internal", &c));
+    }
+
+    /// Vendor placeholders carry a real prefix and are not secrets. Assembled at runtime, like
+    /// every other secret-shaped fixture in this repo — see `psk_vault::sample`.
+    #[test]
+    fn vendor_placeholders_and_low_entropy_bodies_are_rejected() {
+        let c = cfg();
+
+        // AWS's documented access key id. Ends with `EXAMPLE`.
+        let aws_doc_key = ["AKIA", "IOSFODNN7", "EXAMPLE"].concat();
+        assert!(!verify(SecretKind::AwsAccessKeyId, &aws_doc_key, &c));
+
+        // Zero-entropy bodies behind a genuine vendor prefix. The corpus refuted the earlier
+        // assumption that a prefix is sufficient evidence.
+        assert!(!verify(
+            SecretKind::AwsAccessKeyId,
+            &format!("AKIA{}", "X".repeat(16)),
+            &c
+        ));
+        assert!(!verify(
+            SecretKind::GithubPat,
+            &format!("ghp_{}", "x".repeat(36)),
+            &c
+        ));
+        assert!(!verify(
+            SecretKind::GoogleApiKey,
+            &format!("AIza{}", "a".repeat(35)),
+            &c
+        ));
+
+        // ...but a real key with the same prefix still verifies.
+        for k in [
+            SecretKind::AwsAccessKeyId,
+            SecretKind::GithubPat,
+            SecretKind::GoogleApiKey,
+        ] {
+            assert!(verify(k, &sample::for_kind(k), &c), "{k:?} sample rejected");
+        }
+    }
+
+    /// Published, real-format credentials are not secrets. The allowlist stores digests, so this
+    /// test reconstructs the inputs rather than reading them from the source.
+    #[test]
+    fn published_example_keys_are_rejected() {
+        let c = cfg();
+
+        // AWS's documentation secret access key.
+        let aws_doc_secret = ["wJalrXUtnFEMI", "/K7MDENG/bPx", "RfiCYEXAMPLE", "KEY"].concat();
+        assert!(allowlist::is_published_example_key(&aws_doc_secret));
+        assert!(!verify(SecretKind::AwsSecretKey, &aws_doc_secret, &c));
+
+        // One of the Firebase SDK example keys gitleaks allowlists.
+        let firebase = ["AIzaSy", "abcdefghijklmnopqrstuvwxyz", "1234567"].concat();
+        assert!(allowlist::is_published_example_key(&firebase));
+        assert!(!verify(SecretKind::GoogleApiKey, &firebase, &c));
+
+        // An unrelated key of the same shape is not allowlisted.
+        assert!(!allowlist::is_published_example_key(&sample::for_kind(
+            SecretKind::GoogleApiKey
+        )));
+    }
+
+    /// `000000000000000000` is Luhn-valid: every weighted digit is zero. Luhn alone cannot reject
+    /// a placeholder.
+    #[test]
+    fn luhn_valid_placeholder_numbers_are_not_cards() {
+        let c = cfg();
+        assert!(luhn_valid(b"000000000000000000"));
+        assert!(!verify(SecretKind::CreditCard, "000000000000000000", &c));
+        assert!(verify(
+            SecretKind::CreditCard,
+            &sample::for_kind(SecretKind::CreditCard),
+            &c
+        ));
     }
 
     /// The IP regexes match shapes that are not addresses. Those must not become "secrets" just

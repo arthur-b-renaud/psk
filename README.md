@@ -66,13 +66,13 @@ layer proven before the next is written.
 | --- | --- |
 | `psk-vault` — deterministic fakes, salt, guard, restore, near-miss | **Done** |
 | `psk-verifiers` — checksums, entropy gate, allowlists | **Done** |
-| `psk-secrets` — 17 detection rules over a lazily-compiled `RegexSet` | **Done** |
+| `psk-secrets` — detection rules over a lazily-compiled `RegexSet` | **Done** |
 | `psk-core` — recognizer trait, overlap resolution, the engine | **Done** |
 | `psk-proxy` — substitution surfaces, SSE restore, `/restore`, `/events` | **Done** |
+| external corpus + per-kind precision floor | **Done** |
 | `psk-cli`, `psk-init`, `psk-tui` | Not started |
-| `corpus/` — vendored external detection corpus + precision floor | Not started |
 
-123 tests pass. The full loop — detect, verify, resolve overlap, guard, substitute, forward,
+127 tests pass. The full loop — detect, verify, resolve overlap, guard, substitute, forward,
 restore — is proven end to end against a mock upstream, including a fake split across two SSE
 chunks, a fake inside a thinking delta, and a `.env` file arriving inside a `tool_result` block.
 The engine is idempotent when the conversation history containing its own fakes comes back around.
@@ -88,11 +88,25 @@ psk init                   # writes the PreToolUse hook into ~/.claude/settings.
 psk proxy                  # prints the ANTHROPIC_BASE_URL line to export
 ```
 
-Run the tests that exist today with:
+## Requirements
+
+A Rust toolchain, and the C compiler it already needs in order to link. Nothing else — no
+`pkg-config`, no preinstalled system library, no C++ toolchain. `cargo install` just works.
+
+Run the tests with:
 
 ```sh
-cargo test -p psk-vault
+cargo test --workspace          # hermetic and offline
+
+./scripts/fetch-corpus.sh       # optional: the external detection benchmark
+PSK_REQUIRE_CORPUS=1 cargo test -p psk-secrets --test corpus
 ```
+
+Detection is scored against [`psk-corpus`](https://github.com/arthur-b-renaud/psk-corpus), a
+labelled corpus extracted from gitleaks (MIT). Current: **precision 1.0000, recall 1.0000** over the
+71 true positives that map to an M1 rule kind. Those numbers come from a small sample, and the rules
+were tuned against it — it is a regression gate and an outside opinion, not proof of general
+accuracy.
 
 ## What PSK does not protect
 
