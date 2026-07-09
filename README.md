@@ -72,12 +72,14 @@ layer proven before the next is written.
 | external corpus + per-kind precision floor | **Done** |
 | `psk-cli` — `scan` / `proxy` / `hook` / `init` / `uninit` / `gain` / `test` | **Done** |
 | `psk-init` — manages the `PreToolUse` hook in `settings.json` | **Done** |
-| `psk-tui` (`psk top`) | Not started |
+| `psk-tui` (`psk top`) — live inspector | **Done** |
 
-147 tests pass. The full loop — detect, verify, resolve overlap, guard, substitute, forward,
-restore — is proven end to end against a mock upstream, and the **execution-boundary loop** (proxy
-mints a fake → the `PreToolUse` hook restores it before `Bash`/`Edit`/`Write` runs → a mangled fake
-is blocked → a down proxy fails open) was driven by hand against the real binary.
+**M1 is complete.** 178 tests pass. The full loop — detect, verify, resolve overlap, guard,
+substitute, forward, restore — is proven end to end against a mock upstream; the
+**execution-boundary loop** (proxy mints a fake → the `PreToolUse` hook restores it before
+`Bash`/`Edit`/`Write` runs → a mangled fake is blocked → a down proxy fails open) was driven by
+hand against the real binary; and `psk top` was driven live against a running proxy, rendering the
+streamed request feed.
 
 ## Quickstart
 

@@ -348,14 +348,7 @@ fn psk_secrets_scan_config() -> psk_secrets::ScanConfig {
 // --- top --------------------------------------------------------------------------------------
 
 fn cmd_top() -> Result<std::process::ExitCode> {
-    // The TUI is the last crate in the build order (brief §15). Until it lands, point the user at
-    // the raw event stream so `psk top` is not a dead end.
     let config = load_config()?;
-    println!(
-        "psk top — the inspector TUI is not built yet.\n\
-         The proxy already serves the live feed at http://{}/events (SSE).\n\
-         Watch it with:  curl -N http://{}/events",
-        config.bind, config.bind
-    );
+    psk_tui::run(&config).context("running the inspector")?;
     Ok(OK)
 }

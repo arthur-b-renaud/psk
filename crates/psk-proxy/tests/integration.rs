@@ -73,7 +73,11 @@ async fn spawn(
     let up_addr = up_listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(up_listener, up_router).await });
 
-    let psk_home = std::env::temp_dir().join(format!("psk-it-{}-{:?}", std::process::id(), mode));
+    // A unique home per spawned proxy. Keying only by (pid, mode) made every Execution-mode test
+    // share one stats.json and clobber each other's counters under parallel execution.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let psk_home = std::env::temp_dir().join(format!("psk-it-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&psk_home);
     std::fs::create_dir_all(&psk_home).unwrap();
 
@@ -394,6 +398,52 @@ async fn non_json_bodies_pass_through_unchanged() {
 
     let received = upstream.received.lock().unwrap();
     assert_eq!(received.body.as_deref(), Some("this is not json"));
+}
+
+/// A request to an unreachable upstream still records the substitution. The scrub happened and the
+/// request left the machine; the inspector and stats must not go blind because the provider is down.
+#[tokio::test]
+async fn a_down_upstream_still_records_the_substitution() {
+    // Point the proxy at a port nothing is listening on.
+    let psk_home = std::env::temp_dir().join(format!("psk-down-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&psk_home);
+    std::fs::create_dir_all(&psk_home).unwrap();
+    let config = Config {
+        upstream: "http://127.0.0.1:9".to_string(),
+        restore_mode: RestoreMode::Execution,
+        ..Default::default()
+    };
+    let state = Arc::new(ProxyState::new(
+        Arc::new(Vault::with_salt([11u8; 32])),
+        config,
+        psk_home,
+    ));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = psk_proxy::router(Arc::clone(&state));
+    tokio::spawn(async move { axum::serve(listener, router).await });
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/v1/messages"))
+        .json(&request_body())
+        .send()
+        .await
+        .unwrap();
+    // The forward fails, so the agent sees a 502...
+    assert_eq!(resp.status(), reqwest::StatusCode::BAD_GATEWAY);
+
+    // ...but the substitution was recorded anyway.
+    let events = state.events.recent();
+    assert_eq!(
+        events.len(),
+        1,
+        "the request must appear in the inspector feed"
+    );
+    assert!(events[0].chars_hidden > 0);
+    assert!(
+        !events[0].rewritten_text.contains(&aws()),
+        "the fake, not the real value"
+    );
 }
 
 /// The hook's fail-open check needs a cheap liveness probe.

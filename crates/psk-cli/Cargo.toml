@@ -16,6 +16,7 @@ psk-core = { path = "../psk-core" }
 psk-init = { path = "../psk-init" }
 psk-proxy = { path = "../psk-proxy" }
 psk-secrets = { path = "../psk-secrets" }
+psk-tui = { path = "../psk-tui" }
 psk-vault = { path = "../psk-vault" }
 
 anyhow.workspace = true

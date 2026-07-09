@@ -17,11 +17,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use psk_core::Summary;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
 /// What the TUI sees. No original text, by construction: there is no field for it.
-#[derive(Debug, Clone, Serialize)]
+///
+/// `Deserialize` so the TUI, an SSE client, parses the same struct the proxy serialises — one
+/// definition, no drift.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
     pub id: u64,
     /// Milliseconds since the Unix epoch.

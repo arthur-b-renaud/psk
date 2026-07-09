@@ -359,6 +359,12 @@ renders the tail of its own reasoning as assistant output.
 beside the ring buffer and served solely at `GET /events/{id}/original`, on explicit per-id demand.
 Ring buffer and originals are evicted together, so the two never disagree about which ids exist.
 
+**Recording happens before forwarding, not after.** The substitution — secret scrubbed, request
+about to leave — is the security-relevant event, so stats and the inspector event are recorded
+*before* the upstream call. Recording only on a successful forward (the earlier bug) made a request
+to a down provider invisible, exactly when an operator most wants to look. Test:
+`a_down_upstream_still_records_the_substitution`.
+
 `stats.json` holds counters only. There is a test asserting every leaf of the serialised snapshot
 is numeric, so no content can slip in.
 
@@ -401,6 +407,27 @@ The restore *logic* (`decide`) is unit-tested against a fake proxy in `psk-proxy
 format* is integration-tested against the compiled binary in `psk-cli/tests/hook_cli.rs`; the full
 loop (mint via proxy → restore via hook → block a mangled fake → fail open when down) was driven by
 hand and confirmed.
+
+## 7d. The inspector TUI (`psk top`)
+
+A read-only ratatui client of `GET /events`. It never touches traffic, so it attaches and detaches
+at will; nothing it holds reaches disk.
+
+Design split, so the logic is testable without a terminal:
+- `app.rs` — pure state and reducers. Selection is tracked by **event id, not index**, so a paused
+  cursor stays on its request as new rows push in above it, and survives a filter change that
+  reorders the list. Header aggregates are computed from the buffer, so there are no separate
+  counters to drift.
+- `feed.rs` — SSE parsing over any `BufRead` (an HTTP body in production, `&[u8]` in tests).
+- `diff.rs` — the reveal pane's line diff (positional, since substitution preserves line count).
+- `render.rs` + `lib.rs` — the ratatui drawing and the terminal/HTTP driver, the only untested
+  surface. `render.rs` is exercised through ratatui's `TestBackend` (an in-memory terminal) in
+  `tests/render_smoke.rs`; the live binary was driven against a running proxy through a pty.
+
+Real (original) text is fetched only on an explicit `r` keypress, for one request id, and lives
+only in the `Mode::Reveal` payload — dropped on collapse, never buffered, never on disk. The
+near-miss counter is not on the event stream (events carry no hook data), so the TUI reads it from
+`stats.json` every couple of seconds.
 
 ## 8. Dependencies
 

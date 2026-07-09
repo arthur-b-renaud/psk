@@ -1,5 +1,6 @@
 [package]
 name = "psk-tui"
+description = "Terminal inspector for PSK: SSE client + ratatui UI (stats, live feed, prompt diff)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,3 +8,15 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+psk-proxy = { path = "../psk-proxy" }
+psk-vault = { path = "../psk-vault" }
+
+anyhow.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+psk-proxy = { path = "../psk-proxy" }
+ratatui = { workspace = true, features = ["default"] }

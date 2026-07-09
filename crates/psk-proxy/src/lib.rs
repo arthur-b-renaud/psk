@@ -44,6 +44,7 @@ use serde::Serialize;
 
 pub use config::{Config, RestoreMode};
 pub use events::EventBus;
+pub use psk_vault::MARKER;
 pub use stats::Stats;
 
 /// Shared across every request. `Send + Sync`: Claude Code issues parallel background requests
@@ -239,6 +240,22 @@ async fn forward(
     };
 
     // Auth headers pass through untouched — both `x-api-key` and OAuth `Authorization: Bearer`.
+    // Record the substitution *before* forwarding. Substitution is the security-relevant event —
+    // the secret was scrubbed and the request is about to leave — and the inspector and stats must
+    // see it whether or not the upstream is reachable. Recording only on a successful forward would
+    // make a request to a down provider invisible, exactly when an operator most wants to look.
+    let latency_ms = started.elapsed().as_millis() as u64;
+    state.stats.record_request(&summary, latency_ms);
+    let _ = state.stats.flush(&state.psk_home);
+    state.events.publish(
+        target.clone(),
+        model,
+        &summary,
+        latency_ms,
+        original_text,
+        String::from_utf8_lossy(&outbound).into_owned(),
+    );
+
     // Bodies are never logged.
     let mut req = state.http.request(method, &target).body(outbound.to_vec());
     for (name, value) in headers.iter().filter(|(n, _)| forwardable(n)) {
@@ -268,18 +285,6 @@ async fn forward(
     for (name, value) in upstream.headers().iter().filter(|(n, _)| forwardable(n)) {
         response = response.header(name, value);
     }
-
-    let latency_ms = started.elapsed().as_millis() as u64;
-    state.stats.record_request(&summary, latency_ms);
-    let _ = state.stats.flush(&state.psk_home);
-    state.events.publish(
-        target,
-        model,
-        &summary,
-        latency_ms,
-        original_text,
-        String::from_utf8_lossy(&outbound).into_owned(),
-    );
 
     let body = if state.config.restore_mode.restores_response() && is_sse {
         restoring_body(Arc::clone(&state.vault), upstream)
