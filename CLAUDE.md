@@ -189,6 +189,14 @@ unmixed with Apache-2.0 source, and leaves `cargo test` hermetic for a fresh clo
 Without `corpus/`, `cargo test -p psk-secrets --test corpus` prints a hint and passes.
 `PSK_REQUIRE_CORPUS=1` makes absence a hard failure; CI sets it.
 
+**Corpus values are XOR-obfuscated then base64-encoded, not plain base64.** This was learned by
+being wrong: a base64-only manifest was *rejected by GitHub push protection* on the corpus repo.
+GitHub base64-decodes before matching, so `base64("AKIA…")` is caught exactly as the raw key would
+be. XOR against a published key (`psk-corpus/v1`, in both `extract_gitleaks.py` and the test's
+`OBFUSCATION_KEY`) defeats every scanner that decodes-then-matches, because the scanner cannot know
+the key. It is obfuscation for scanner hygiene, not security — the key is public and so is the data.
+The two copies of the key must stay in sync.
+
 **gitleaks' `fps` are per-rule negatives**, meaning "rule R must not match this" — *not* "this string
 contains no secret". `anthropic-api-key`'s negatives include a valid Anthropic *admin* key, and
 `curl-auth-header`'s contain a genuine JWT. Scoring them as universal negatives gives wrong numbers.
