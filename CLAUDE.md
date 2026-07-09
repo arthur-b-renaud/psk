@@ -483,7 +483,26 @@ a **random per-session salt**. It is not a starting point. Random salts corrupt 
 proxy restart, for the reason in §4, and opaque tokens destroy the LLM's ability to reason about
 the value's shape. Only the checksum validators were conceptually worth carrying forward.
 
-## 10. Conventions
+## 10. Extending detection
+
+PSK's remit is **secrets and structured data** — API keys, tokens, private keys, and shaped values
+like credit cards, IBANs, and (a natural next addition) phone numbers and further `.env`-style
+credentials. Every extension is the same four-part change, and nothing downstream of the engine has
+to move:
+
+1. A `SecretKind` variant, and its fake template, in `psk-vault/src/kind.rs`. The template is what
+   makes the fake format-preserving; a phone number's fake is a reserved/test range, the way a card
+   uses a documentation BIN.
+2. A rule in `psk-secrets/src/rules.rs`, and — if the shape can produce false positives — a check
+   in `psk-verifiers` (a checksum, an entropy gate, or an allowlist).
+3. A `Recognizer` is already the seam: the regex layer is one implementation, and the engine only
+   sees the trait, so a new detector plugs in without touching the proxy, the hook, or the TUI.
+4. Corpus rows for the new kind. The external corpus (see §6, the gitleaks gate) is extensible —
+   add labelled true and false positives, and the **per-kind precision floor** (≥ 0.95) holds the
+   new rule to the same standard as the existing ones. Self-graded fixtures alone prove nothing to
+   an open-source audience; the outside benchmark is the point.
+
+## 11. Conventions
 
 - `thiserror` in library crates, `anyhow` at the binary boundary. No `.unwrap()` in library paths
   reachable from user input.
