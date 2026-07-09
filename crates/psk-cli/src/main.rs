@@ -37,7 +37,7 @@ enum Command {
     Gain,
     /// Run detection against the built-in fixtures and, if present, the external corpus.
     Test,
-    /// Launch the inspector TUI (not yet implemented).
+    /// Launch the live inspector TUI (watches the proxy's event feed).
     Top,
 }
 
