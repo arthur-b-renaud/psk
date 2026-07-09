@@ -362,6 +362,46 @@ Ring buffer and originals are evicted together, so the two never disagree about 
 `stats.json` holds counters only. There is a test asserting every leaf of the serialised snapshot
 is numeric, so no content can slip in.
 
+## 7c. The PreToolUse hook wire contract (verified)
+
+`psk hook` is the execution-boundary restore point. Its I/O contract with Claude Code was verified
+against the hooks reference before implementation, because a wrong contract means the tool runs on
+the fake — a silent leak, or a corrupted write.
+
+**stdin** is one JSON object: `{ session_id, hook_event_name: "PreToolUse", tool_name, tool_input,
+… }`. Parse defensively; do not reject on unknown fields.
+
+**Rewriting the input** requires exit 0 and this exact stdout shape:
+
+```json
+{ "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "allow",
+    "updatedInput": { …the full, replacement tool_input… } } }
+```
+
+Two ways to get this wrong, both silent:
+- `updatedInput` **must** be paired with `permissionDecision: "allow"`. Without it the rewrite is
+  dropped and the fake reaches the tool. This is the single most dangerous mistake in the codebase.
+- `updatedInput` **replaces** `tool_input` wholesale — it must carry every field the tool needs,
+  not a patch. Drop `file_path` from a `Write` and you have changed where it writes.
+
+`updatedInput` needs CLI **v2.0.10+**. So PSK only emits it when a field actually changed; the
+common "nothing to restore" path emits **empty stdout** (exit 0), which has no version dependency.
+
+**Blocking** is exit 2 with the message on stderr (brief §8b, and universal across CLI versions).
+The newer JSON `permissionDecision: "deny"` form exists but was not used, to avoid a version floor
+on the block path.
+
+Which fields are restored, per tool: `Bash` → `command`; `Write` → `content` (never `file_path`);
+`Edit`/`MultiEdit` → `old_string` and `new_string`. An explicit list, not "every string", because
+restoring a path renames a file. The list is in `psk_proxy::hook::fields_for`.
+
+The restore *logic* (`decide`) is unit-tested against a fake proxy in `psk-proxy::hook`; the *wire
+format* is integration-tested against the compiled binary in `psk-cli/tests/hook_cli.rs`; the full
+loop (mint via proxy → restore via hook → block a mangled fake → fail open when down) was driven by
+hand and confirmed.
+
 ## 8. Dependencies
 
 Justified additions beyond the brief's §11 list:

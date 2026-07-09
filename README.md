@@ -70,23 +70,31 @@ layer proven before the next is written.
 | `psk-core` — recognizer trait, overlap resolution, the engine | **Done** |
 | `psk-proxy` — substitution surfaces, SSE restore, `/restore`, `/events` | **Done** |
 | external corpus + per-kind precision floor | **Done** |
-| `psk-cli`, `psk-init`, `psk-tui` | Not started |
+| `psk-cli` — `scan` / `proxy` / `hook` / `init` / `uninit` / `gain` / `test` | **Done** |
+| `psk-init` — manages the `PreToolUse` hook in `settings.json` | **Done** |
+| `psk-tui` (`psk top`) | Not started |
 
-127 tests pass. The full loop — detect, verify, resolve overlap, guard, substitute, forward,
-restore — is proven end to end against a mock upstream, including a fake split across two SSE
-chunks, a fake inside a thinking delta, and a `.env` file arriving inside a `tool_result` block.
-The engine is idempotent when the conversation history containing its own fakes comes back around.
+147 tests pass. The full loop — detect, verify, resolve overlap, guard, substitute, forward,
+restore — is proven end to end against a mock upstream, and the **execution-boundary loop** (proxy
+mints a fake → the `PreToolUse` hook restores it before `Bash`/`Edit`/`Write` runs → a mangled fake
+is blocked → a down proxy fails open) was driven by hand against the real binary.
 
-There is no `psk` binary yet, so you cannot run the proxy from the command line. That lands with
-`psk-cli`.
-
-Once the CLI lands, the quickstart will be:
+## Quickstart
 
 ```sh
-cargo install psk-cli      # not yet published
-psk init                   # writes the PreToolUse hook into ~/.claude/settings.json
-psk proxy                  # prints the ANTHROPIC_BASE_URL line to export
+cargo install --path crates/psk-cli   # builds the `psk` binary
+psk init                              # installs the PreToolUse restore hook
+psk proxy                             # prints the ANTHROPIC_BASE_URL line to export
 ```
+
+Then, in the shell where you run your agent:
+
+```sh
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
+```
+
+`psk top` is the one command not yet built — it prints where to watch the raw event stream in the
+meantime.
 
 ## Requirements
 

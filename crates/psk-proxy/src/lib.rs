@@ -23,6 +23,7 @@
 
 pub mod config;
 pub mod events;
+pub mod hook;
 pub mod sse;
 pub mod stats;
 pub mod surfaces;

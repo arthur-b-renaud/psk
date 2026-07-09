@@ -1,5 +1,6 @@
 [package]
 name = "psk-cli"
+description = "The `psk` binary: scan / proxy / hook / init / uninit / gain / test / top."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,3 +12,14 @@ name = "psk"
 path = "src/main.rs"
 
 [dependencies]
+psk-core = { path = "../psk-core" }
+psk-init = { path = "../psk-init" }
+psk-proxy = { path = "../psk-proxy" }
+psk-secrets = { path = "../psk-secrets" }
+psk-vault = { path = "../psk-vault" }
+
+anyhow.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
