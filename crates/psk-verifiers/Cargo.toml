@@ -1,5 +1,6 @@
 [package]
 name = "psk-verifiers"
+description = "False-positive killers: checksums, entropy gate, allowlists."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,3 +8,4 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+psk-vault = { path = "../psk-vault" }

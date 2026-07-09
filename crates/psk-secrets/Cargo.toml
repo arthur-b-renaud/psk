@@ -1,5 +1,6 @@
 [package]
 name = "psk-secrets"
+description = "Detection rules for high-value secret patterns, compiled once into a RegexSet."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,3 +8,6 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+psk-vault = { path = "../psk-vault" }
+psk-verifiers = { path = "../psk-verifiers" }
+regex.workspace = true

@@ -182,8 +182,19 @@ fn jwt(ks: &mut KeyStream, real: &str) -> String {
 
 /// `-----BEGIN <label>-----` … `-----END <label>-----`, label and body length preserved,
 /// body re-wrapped at 64 characters like every PEM emitter does.
+///
+/// **Line-separator preservation matters.** A GCP service-account key is a PEM block living inside
+/// a JSON string, where the newlines are the two characters `\` `n`, not U+000A. Emitting a real
+/// newline into that fake would produce invalid JSON, and the agent would fail to parse its own
+/// credentials file. So whichever separator the real block used, the fake uses too.
 fn pem(ks: &mut KeyStream, real: &str) -> String {
-    let lines: Vec<&str> = real.lines().collect();
+    // A literal backslash-n and no real newline means we are inside a JSON string.
+    let sep = if !real.contains('\n') && real.contains("\\n") {
+        "\\n"
+    } else {
+        "\n"
+    };
+    let lines: Vec<&str> = real.split(sep).collect();
     let begin = lines.iter().find(|l| l.contains("-----BEGIN"));
     let end = lines.iter().find(|l| l.contains("-----END"));
     let (Some(begin), Some(end)) = (begin, end) else {
@@ -204,10 +215,10 @@ fn pem(ks: &mut KeyStream, real: &str) -> String {
 
     let mut out = String::with_capacity(real.len());
     out.push_str(begin.trim());
-    out.push('\n');
+    out.push_str(sep);
     for chunk in body.chunks(64) {
         out.extend(chunk);
-        out.push('\n');
+        out.push_str(sep);
     }
     out.push_str(end.trim());
     out
@@ -387,6 +398,27 @@ mod tests {
         assert!(fake.contains(MARKER));
         let body: String = fake.lines().filter(|l| !l.contains("-----")).collect();
         assert_eq!(body.len(), 16, "body length preserved (6 + 10 chars)");
+    }
+
+    /// A GCP service-account key is a PEM inside a JSON string. Emitting a real newline into the
+    /// fake would break the surrounding JSON, so the `\n` escape must survive substitution.
+    #[test]
+    fn gcp_pem_preserves_escaped_newlines() {
+        let real = crate::sample::for_kind(SecretKind::GcpServiceAccountKey);
+        assert!(
+            real.contains("\\n") && !real.contains('\n'),
+            "sample must be JSON-escaped"
+        );
+
+        let fake = derive(&SALT, SecretKind::GcpServiceAccountKey, &real);
+        assert!(
+            !fake.contains('\n'),
+            "a real newline would corrupt the enclosing JSON: {fake:?}"
+        );
+        assert!(fake.contains("\\n"));
+        assert!(fake.starts_with("-----BEGIN PRIVATE KEY-----\\n"));
+        assert!(fake.ends_with("-----END PRIVATE KEY-----"));
+        assert!(fake.contains(MARKER));
     }
 
     #[test]

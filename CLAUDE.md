@@ -160,6 +160,41 @@ positives only if restore is perfect, and restore is not perfect.
 - Lockfile hash shapes (`sha256-`, `sha512-`, integrity fields) belong in the `psk-verifiers`
   allowlist, with a fixture proving each allowlisted class is *not* substituted.
 
+**Entropy cannot reject a git SHA.** A random 40-character hex string scores ~3.9 bits per
+character, comfortably over any usable floor (`DEFAULT_MIN_BITS_PER_CHAR` is 3.0 — raising it high
+enough to reject hex would also reject real base64 credentials). Pure-hex exclusion is what kills
+git SHAs, not the entropy gate. There is a test asserting the SHA *passes* the gate, so nobody
+"fixes" this by tuning the threshold.
+
+**Gotcha: `is_reserved_ip` returns `false` for non-addresses.** The IP regexes match shapes that
+are not addresses (`999.999.999.999`, `1.2.3.4.5`, a version string). A verifier that only asked
+"is it reserved?" would answer "no" and treat the garbage as a live secret. `verify` calls
+`allowlist::is_valid_ip` **first**. Same class of bug as a `contains` check on an empty set.
+
+Note also that `1.2.3.4` parses as a routable address, so with the network rules enabled a version
+string is substituted. That is one more reason those rules ship off.
+
+### Overlap resolution (`psk-core`)
+
+Overlap between rules is normal, not exceptional: an Anthropic key's 40-character tail genuinely
+has the AWS-secret shape, and a GCP service-account key matches both its own rule and the generic
+PEM rule at the identical span. `psk-secrets::scan` therefore returns **raw, overlapping** matches
+and `Engine::substitute` resolves them.
+
+The rule is **longest wins**, ties broken by `SecretKind`'s *declaration order* (which is `Ord` by
+derive). Specific kinds are declared before the generics they subsume — `GcpServiceAccountKey`
+before `PrivateKeyBlock` — so an equal-length tie picks the more specific kind, deterministically,
+rather than depending on which recognizer happened to report first. **If you reorder the
+`SecretKind` variants you change tie-breaking.**
+
+### Gotcha: PEM inside JSON
+
+A GCP service-account key is a PEM block living inside a JSON string, so its newlines are the two
+characters `\` `n`, not U+000A. The fake generator detects the escaped form and preserves it. Emit
+a real newline there and the agent's own credentials file stops parsing — a corruption PSK would
+have caused, in a file the user never asked us to touch. Tests: `gcp_pem_preserves_escaped_newlines`
+and `gcp_key_inside_json_stays_valid_json`.
+
 ## 7. Auth findings (§2 pre-check)
 
 **Status: DONE, 2026-07-09. OAuth works through a local base URL. PSK serves both auth modes.**

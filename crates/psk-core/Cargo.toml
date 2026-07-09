@@ -1,5 +1,6 @@
 [package]
 name = "psk-core"
+description = "Orchestrator: recognizers -> overlap resolution -> fake-recognition guard -> vault."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,3 +8,9 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+psk-secrets = { path = "../psk-secrets" }
+psk-vault = { path = "../psk-vault" }
+psk-verifiers = { path = "../psk-verifiers" }
+
+[dev-dependencies]
+psk-vault = { path = "../psk-vault" }

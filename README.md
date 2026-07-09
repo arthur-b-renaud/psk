@@ -64,11 +64,17 @@ layer proven before the next is written.
 
 | Component | State |
 | --- | --- |
-| `psk-vault` — deterministic fakes, salt, guard, restore, near-miss | **Done**, 35 tests passing |
-| `psk-secrets` / `psk-verifiers` — rules and false-positive killers | Not started |
-| `psk-core` — the recognizer/engine orchestration | Not started |
+| `psk-vault` — deterministic fakes, salt, guard, restore, near-miss | **Done** |
+| `psk-verifiers` — checksums, entropy gate, allowlists | **Done** |
+| `psk-secrets` — 17 detection rules over a lazily-compiled `RegexSet` | **Done** |
+| `psk-core` — recognizer trait, overlap resolution, the engine | **Done** |
 | `psk-proxy` — outbound substitution, `/restore`, `/events` | Not started |
 | `psk-cli`, `psk-init`, `psk-tui` | Not started |
+| `corpus/` — vendored external detection corpus + precision floor | Not started |
+
+79 tests pass. The full loop — detect, verify, resolve overlap, guard, substitute, restore — is
+proven end to end on a five-secret prompt and on a `.env` file, and is provably idempotent when the
+conversation history containing its own fakes comes back around.
 
 Once the CLI lands, the quickstart will be:
 

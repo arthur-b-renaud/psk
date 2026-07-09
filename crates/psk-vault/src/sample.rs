@@ -89,10 +89,13 @@ pub fn for_kind(kind: SecretKind) -> String {
         SecretKind::BearerToken => ["AbCdEf0123456789", "AbCdEf0123456789"].concat(),
 
         // Truncated PEM bodies: enough armour and base64 to exercise the shape, no actual key.
-        SecretKind::PrivateKeyBlock | SecretKind::GcpServiceAccountKey => {
-            pem_block("PRIVATE KEY", "MIIEvQIBADANBgkq")
-        }
-        SecretKind::SshPrivateKey => pem_block("OPENSSH PRIVATE KEY", "b3BlbnNzaC1rZXktdjEA"),
+        SecretKind::PrivateKeyBlock => pem_block("PRIVATE KEY", "MIIEvQIBADANBgkq", "\n"),
+        SecretKind::SshPrivateKey => pem_block("OPENSSH PRIVATE KEY", "b3BlbnNzaC1rZXktdjEA", "\n"),
+
+        // A GCP service-account key is a PEM inside a JSON string, so its newlines are the two
+        // characters `\` `n`. The fake must preserve that escaping or the agent's own credentials
+        // file stops parsing.
+        SecretKind::GcpServiceAccountKey => pem_block("PRIVATE KEY", "MIIEvQIBADANBgkq", "\\n"),
 
         // A published Luhn-valid test number. Not in any live BIN.
         SecretKind::CreditCard => ["4539", " ", "1488", " ", "0343", " ", "6467"].concat(),
@@ -109,8 +112,10 @@ pub fn for_kind(kind: SecretKind) -> String {
     }
 }
 
-fn pem_block(label: &str, body: &str) -> String {
-    format!("-----BEGIN {label}-----\n{body}\n-----END {label}-----")
+/// `sep` is `"\n"` for a file on disk, or the two-character escape `"\\n"` for a PEM embedded in
+/// a JSON string (a GCP service-account key).
+fn pem_block(label: &str, body: &str, sep: &str) -> String {
+    format!("-----BEGIN {label}-----{sep}{body}{sep}-----END {label}-----")
 }
 
 #[cfg(test)]
