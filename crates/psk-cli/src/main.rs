@@ -121,12 +121,15 @@ fn cmd_proxy() -> Result<std::process::ExitCode> {
     let mode = config.restore_mode;
     let state = std::sync::Arc::new(psk_proxy::ProxyState::new(vault, config, home));
 
-    println!("psk proxy — restore_mode = {mode:?}");
-    println!("point your agent at it:\n");
-    println!("    export ANTHROPIC_BASE_URL=http://{bind}\n");
+    println!("psk proxy is running on http://{bind}  (restore_mode = {mode:?})\n");
+    println!("  In another terminal, point your agent at it:\n");
+    println!("      export ANTHROPIC_BASE_URL=http://{bind}\n");
     if mode == psk_proxy::RestoreMode::Execution {
-        println!("execution mode: run `psk init` so the hook restores secrets at tool time.");
+        println!("  execution mode: run `psk init` so the hook restores secrets at tool time.\n");
     }
+    // The last line before it blocks: the mistake to prevent is Ctrl-C'ing this, thinking the
+    // command finished. Say plainly that it keeps running here.
+    println!("Leave this terminal open — the proxy runs here. Press Ctrl-C to stop.");
 
     // A dedicated runtime rather than #[tokio::main], so cold startup of the *other* subcommands
     // (gain, init, hook) pays nothing for tokio.
