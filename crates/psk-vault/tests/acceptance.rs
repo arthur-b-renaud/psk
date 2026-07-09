@@ -245,6 +245,33 @@ fn near_miss_ignores_pem_boilerplate() {
     );
 }
 
+/// The SSE restorer's hold-back primitive: how many trailing bytes could still become a fake?
+#[test]
+fn pending_fake_prefix_len_measures_the_holdback_window() {
+    let v = vault();
+    let fake = v.substitute(
+        &sample::for_kind(SecretKind::AwsAccessKeyId),
+        SecretKind::AwsAccessKeyId,
+    );
+
+    // A delta ended mid-token: the whole partial tail must be held back until the next delta.
+    let split_at = 7;
+    let text = format!("the key is {}", &fake[..split_at]);
+    assert_eq!(v.pending_fake_prefix_len(&text), split_at);
+
+    // No suffix can grow into a fake: forward everything, hold back nothing. This is the common
+    // case, and it is what keeps streaming from stalling.
+    assert_eq!(v.pending_fake_prefix_len("cargo build --release"), 0);
+    assert_eq!(v.pending_fake_prefix_len(""), 0);
+
+    // A *complete* fake at the tail is `restore`'s job. Only a proper prefix is held back.
+    assert_eq!(v.pending_fake_prefix_len(&fake), 0);
+
+    // A vault that has minted nothing holds back nothing.
+    let empty = Vault::with_salt([7u8; 32]);
+    assert_eq!(empty.pending_fake_prefix_len("anything at all"), 0);
+}
+
 /// An unrestored fake *card* carries no alphabetic marker, so the reserved BIN has to catch it.
 #[test]
 fn near_miss_catches_reserved_space_residue() {

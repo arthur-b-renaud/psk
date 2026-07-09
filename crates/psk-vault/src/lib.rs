@@ -202,6 +202,42 @@ impl Vault {
         nearmiss::detect(text, &fakes)
     }
 
+    /// The length of the longest suffix of `s` that is a **proper prefix** of some known fake.
+    ///
+    /// This is the SSE restorer's hold-back length (brief §8). A fake can be split across two
+    /// streamed deltas, so the restorer must retain a trailing window until it knows the window
+    /// cannot grow into a fake.
+    ///
+    /// Answering "how many trailing bytes could still become a fake?" *exactly* is what keeps
+    /// streaming responsive: the naive alternative — always hold back `longest_fake_len` bytes —
+    /// would stall the stream by the length of a PEM block on every single delta. In practice this
+    /// returns 0, so the delta is forwarded whole and immediately.
+    ///
+    /// Returns 0 when nothing has been minted, or when no suffix could extend into a fake.
+    pub fn pending_fake_prefix_len(&self, s: &str) -> usize {
+        let inner = match self.inner.read() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let mut best = 0usize;
+        for fake in inner.rev.keys() {
+            // A *proper* prefix: a complete fake at the tail was already handled by `restore`,
+            // so `fake.len()` itself is excluded.
+            let max_k = s.len().min(fake.len().saturating_sub(1));
+            // Only look for something longer than the best we already have.
+            for k in (best + 1..=max_k).rev() {
+                let tail_start = s.len() - k;
+                if s.is_char_boundary(tail_start)
+                    && fake.as_bytes()[..k] == s.as_bytes()[tail_start..]
+                {
+                    best = k;
+                    break;
+                }
+            }
+        }
+        best
+    }
+
     /// Number of distinct secrets currently mapped. For `psk gain`: counters only, never content.
     pub fn len(&self) -> usize {
         self.inner.read().map(|i| i.fwd.len()).unwrap_or(0)

@@ -233,12 +233,67 @@ Consequences for `psk-proxy`:
 
 No README limitation section is needed. Both auth modes are supported.
 
+## 7b. The proxy
+
+A catch-all route, not a literal `/v1/messages`: Claude Code sends `POST /v1/messages?beta=true`
+and also hits other endpoints (token counting, model listing) that must keep working. The path
+**and query string** are forwarded verbatim.
+
+Headers pass through untouched except the hop-by-hop set (`host`, `content-length`, `connection`,
+`transfer-encoding`) and **`accept-encoding`**, which is stripped on purpose: PSK rewrites the SSE
+body and cannot rewrite what it cannot read. `authorization`, `x-api-key`, `anthropic-beta`,
+`anthropic-version` and the `x-stainless-*` family all reach the upstream unmodified.
+
+A body that is not JSON, or JSON that will not re-serialise, is forwarded **untouched** rather than
+mangled. Better to break nothing than to corrupt a request shape we did not anticipate.
+
+### The SSE restorer (`full` mode) — two layers of fragmentation
+
+1. **HTTP chunks split SSE events.** Bytes are buffered until a complete `\n\n`-terminated event
+   exists.
+2. **SSE events split the text itself.** The model streams a few characters per
+   `content_block_delta`, so a fake is routinely spread across several *events*. Restoring each
+   delta in isolation would never match one.
+
+The fix for (2) is a hold-back window. The naive version — always retain `longest_fake_len` bytes —
+would stall the stream by the length of a PEM block on every delta. Instead
+`Vault::pending_fake_prefix_len` computes *exactly* how many trailing bytes could still grow into a
+fake. It is almost always 0, so deltas forward immediately with no added latency.
+
+**Restore happens inside the parsed JSON, never on the raw bytes.** A real secret can contain
+characters illegal raw inside a JSON string — a PEM key is full of newlines. Splicing those into
+the SSE bytes would produce a response the agent cannot parse.
+
+**Held-back text is flushed as a synthetic delta event**, on `content_block_stop` or at stream end,
+and never as bare bytes appended after the last event — the agent's SSE parser would discard those
+and the tail of the secret would vanish. A flushed `thinking_delta` keeps its type, or the agent
+renders the tail of its own reasoning as assistant output.
+
+### Events and stats
+
+`GET /events` carries **metadata plus the rewritten (safe) text only**. The original is stashed
+beside the ring buffer and served solely at `GET /events/{id}/original`, on explicit per-id demand.
+Ring buffer and originals are evicted together, so the two never disagree about which ids exist.
+
+`stats.json` holds counters only. There is a test asserting every leaf of the serialised snapshot
+is numeric, so no content can slip in.
+
 ## 8. Dependencies
 
 Justified additions beyond the brief's §11 list:
 
 - **`getrandom`** — 32 bytes of entropy for the salt on first run. Tiny, no C toolchain. `rand`
   would be a much larger dependency for one call.
+- **`futures-util`, `tokio-stream`, `bytes`** — streaming plumbing for the proxy's SSE path.
+- **`toml`** — reads `~/.psk/config.toml`, which the brief specifies.
+
+**`aws-lc-rs`, via `reqwest` → `rustls`: a deviation worth stating.** The brief says "nothing that
+needs a system C library in M1". `aws-lc-rs` does not need a *system* library — it vendors its C
+sources — but it does compile C during the build, so `cargo install psk-cli` needs a C compiler
+present. In practice every machine with a working Rust toolchain has one (the linker path requires
+it), so `cargo install` still "just works". If that ever becomes a problem, `reqwest`'s
+`rustls-no-provider` feature plus an explicit `ring` provider removes the C entirely. Recorded here
+so the trade-off is a choice rather than an accident.
 
 Deliberately *not* used, despite the earlier implementation at `94aa2f4` pulling them in:
 `luhn3`, `iban`, `card_validate`. Luhn and mod-97 are ~15 lines each and PSK needs to both verify

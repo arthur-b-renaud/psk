@@ -68,13 +68,17 @@ layer proven before the next is written.
 | `psk-verifiers` — checksums, entropy gate, allowlists | **Done** |
 | `psk-secrets` — 17 detection rules over a lazily-compiled `RegexSet` | **Done** |
 | `psk-core` — recognizer trait, overlap resolution, the engine | **Done** |
-| `psk-proxy` — outbound substitution, `/restore`, `/events` | Not started |
+| `psk-proxy` — substitution surfaces, SSE restore, `/restore`, `/events` | **Done** |
 | `psk-cli`, `psk-init`, `psk-tui` | Not started |
 | `corpus/` — vendored external detection corpus + precision floor | Not started |
 
-79 tests pass. The full loop — detect, verify, resolve overlap, guard, substitute, restore — is
-proven end to end on a five-secret prompt and on a `.env` file, and is provably idempotent when the
-conversation history containing its own fakes comes back around.
+123 tests pass. The full loop — detect, verify, resolve overlap, guard, substitute, forward,
+restore — is proven end to end against a mock upstream, including a fake split across two SSE
+chunks, a fake inside a thinking delta, and a `.env` file arriving inside a `tool_result` block.
+The engine is idempotent when the conversation history containing its own fakes comes back around.
+
+There is no `psk` binary yet, so you cannot run the proxy from the command line. That lands with
+`psk-cli`.
 
 Once the CLI lands, the quickstart will be:
 
