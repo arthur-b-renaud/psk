@@ -52,6 +52,9 @@ pub struct App {
     /// Whether keystrokes are currently editing [`App::filter`] rather than navigating.
     filtering: bool,
     mode: Mode,
+    /// Vertical scroll offset of the detail/reveal pane, in lines. Reset whenever a different
+    /// request is opened. Clamped to the content by the renderer.
+    detail_scroll: u16,
     /// Near-misses blocked at the hook. Not on the event stream (it carries no secrets and no hook
     /// data); the driver reads it from `stats.json` and pushes it in.
     pub near_misses_blocked: u64,
@@ -68,6 +71,7 @@ impl App {
             filter: String::new(),
             filtering: false,
             mode: Mode::List,
+            detail_scroll: 0,
             near_misses_blocked: 0,
         }
     }
@@ -154,11 +158,30 @@ impl App {
 
         match key {
             Key::Quit => return Effect::Quit,
-            Key::Up => self.move_selection(-1),
-            Key::Down => self.move_selection(1),
+            // Up/Down navigate the list, but scroll the pane once a request is open.
+            Key::Up => self.nav_or_scroll(-1),
+            Key::Down => self.nav_or_scroll(1),
+            Key::PageUp => self.nav_or_scroll(-10),
+            Key::PageDown => self.nav_or_scroll(10),
+            Key::Home => {
+                if self.mode == Mode::List {
+                    self.selected_id = self.visible().first().map(|e| e.id);
+                } else {
+                    self.detail_scroll = 0;
+                }
+            }
+            Key::End => {
+                if self.mode == Mode::List {
+                    self.selected_id = self.visible().last().map(|e| e.id);
+                } else {
+                    // Renderer clamps to the real bottom; MAX means "as far as it goes".
+                    self.detail_scroll = u16::MAX;
+                }
+            }
             Key::Enter => {
                 if self.selected_event().is_some() {
                     self.mode = Mode::Detail;
+                    self.detail_scroll = 0;
                 }
             }
             Key::Reveal => {
@@ -176,6 +199,15 @@ impl App {
             Key::Char(_) | Key::Backspace => {}
         }
         Effect::None
+    }
+
+    /// In the list, move the selection; in the detail/reveal pane, scroll it.
+    fn nav_or_scroll(&mut self, delta: i16) {
+        if self.mode == Mode::List {
+            self.move_selection(delta as isize);
+        } else {
+            self.detail_scroll = self.detail_scroll.saturating_add_signed(delta);
+        }
     }
 
     fn on_filter_key(&mut self, key: Key) -> Effect {
@@ -197,6 +229,7 @@ impl App {
         // Ignore a stale reveal that arrived after the user already collapsed the pane.
         if self.mode != Mode::List {
             self.mode = Mode::Reveal(original);
+            self.detail_scroll = 0;
         }
     }
 
@@ -217,6 +250,7 @@ impl App {
         let current = self.selected_index().unwrap_or(0) as isize;
         let next = (current + delta).clamp(0, visible.len() as isize - 1) as usize;
         self.selected_id = Some(visible[next].id);
+        self.detail_scroll = 0;
     }
 
     // -- header aggregates (computed from the buffer; no separate counters to drift) ------------
@@ -263,6 +297,10 @@ impl App {
     pub fn mode(&self) -> &Mode {
         &self.mode
     }
+    /// The detail/reveal pane's scroll offset, in lines. The renderer clamps it to the content.
+    pub fn detail_scroll(&self) -> u16 {
+        self.detail_scroll
+    }
     /// The selected row's index in the visible list, or 0 when the list is empty.
     pub fn selected(&self) -> usize {
         self.selected_index().unwrap_or(0)
@@ -286,6 +324,10 @@ impl App {
 pub enum Key {
     Up,
     Down,
+    PageUp,
+    PageDown,
+    Home,
+    End,
     Enter,
     Escape,
     Reveal,
@@ -499,6 +541,52 @@ mod tests {
     fn quit_key_asks_to_quit() {
         let mut app = App::new(10);
         assert_eq!(app.on_key(Key::Quit), Effect::Quit);
+    }
+
+    #[test]
+    fn arrows_scroll_the_detail_pane_without_moving_the_selection() {
+        let mut app = App::new(10);
+        app.push(event(1, "u", 0, 0, 0));
+        app.push(event(2, "u", 0, 0, 0));
+        app.on_key(Key::Enter); // open detail on the selected (newest) request
+        assert_eq!(*app.mode(), Mode::Detail);
+        assert_eq!(app.detail_scroll(), 0, "opens at the top");
+
+        app.on_key(Key::Down);
+        app.on_key(Key::Down);
+        assert_eq!(app.detail_scroll(), 2, "Down scrolls the pane in detail mode");
+        assert_eq!(app.selected_event().unwrap().id, 2, "selection is untouched");
+
+        app.on_key(Key::Up);
+        assert_eq!(app.detail_scroll(), 1);
+        app.on_key(Key::Home);
+        assert_eq!(app.detail_scroll(), 0);
+        app.on_key(Key::End);
+        assert_eq!(app.detail_scroll(), u16::MAX, "End asks for the bottom; render clamps it");
+    }
+
+    #[test]
+    fn scroll_resets_when_a_different_request_is_opened() {
+        let mut app = App::new(10);
+        app.push(event(1, "u", 0, 0, 0));
+        app.push(event(2, "u", 0, 0, 0));
+        app.on_key(Key::Enter);
+        app.on_key(Key::Down); // scrolled into request 2
+        assert_eq!(app.detail_scroll(), 1);
+        app.on_key(Key::Escape); // back to the list
+        app.on_key(Key::Up); // select the other request — scroll resets
+        assert_eq!(app.detail_scroll(), 0);
+    }
+
+    #[test]
+    fn up_and_down_still_navigate_the_list() {
+        let mut app = App::new(10);
+        app.push(event(1, "u", 0, 0, 0));
+        app.push(event(2, "u", 0, 0, 0));
+        // In the list, Down moves the selection (it does not scroll a pane).
+        app.on_key(Key::Down);
+        assert_eq!(app.selected_event().unwrap().id, 1);
+        assert_eq!(app.detail_scroll(), 0);
     }
 
     /// The reveal never survives to disk and never enters the event buffer: it lives only in the

@@ -440,6 +440,8 @@ Design split, so the logic is testable without a terminal:
   counters to drift.
 - `feed.rs` — SSE parsing over any `BufRead` (an HTTP body in production, `&[u8]` in tests).
 - `diff.rs` — the reveal pane's line diff (positional, since substitution preserves line count).
+- `jsonfmt.rs` — pretty-prints the captured body (the proxy serialises it *compact*, one giant
+  line) so the detail pane is readable. Non-JSON bodies pass through unchanged.
 - `render.rs` + `lib.rs` — the ratatui drawing and the terminal/HTTP driver, the only untested
   surface. `render.rs` is exercised through ratatui's `TestBackend` (an in-memory terminal) in
   `tests/render_smoke.rs`; the live binary was driven against a running proxy through a pty.
@@ -448,6 +450,21 @@ Real (original) text is fetched only on an explicit `r` keypress, for one reques
 only in the `Mode::Reveal` payload — dropped on collapse, never buffered, never on disk. The
 near-miss counter is not on the event stream (events carry no hook data), so the TUI reads it from
 `stats.json` every couple of seconds.
+
+**Gotcha: a request-wide HTTP timeout silently kills the live feed.** `GET /events` is a long-lived
+SSE stream. The blocking `reqwest` client must be built with **no total `.timeout()`** — only a
+`connect_timeout` — or the whole stream is severed when the timeout elapses and `psk top` freezes a
+few seconds after attaching (it looked like "not real-time"). The one-shot requests (`/health`,
+`/events/{id}/original`) set a per-request `.timeout()` instead. The proxy adds a `KeepAlive` comment
+ping every 15s so an idle connection stays open and detectable; `feed.rs` already ignores SSE
+comment lines.
+
+**The detail pane pretty-prints and syntax-highlights the JSON.** Keys, string values, numbers, and
+literals are coloured; a marker-bearing token (a substituted secret) is bold magenta so it stands
+out even inside a long prompt string. The reveal diff runs over the *pretty* forms of both sides, so
+one substituted value shows as a single changed line in identical, highlighted context. The pane
+scrolls (`↑↓`, `PgUp`/`PgDn`, `Home`/`End`), since a full request body is tall; scroll is tracked in
+`app.rs` and clamped to the content by the renderer.
 
 ## 8. Dependencies
 

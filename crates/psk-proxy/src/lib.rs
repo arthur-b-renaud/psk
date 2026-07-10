@@ -165,6 +165,9 @@ async fn events_stream(
             .chain(live)
             .map(|e| Ok(SseEvent::default().json_data(&e).unwrap_or_default())),
     )
+    // A comment ping every 15s so an idle connection is not dropped and the client can tell a live
+    // proxy from a dead one. `psk top`'s SSE parser ignores comment lines.
+    .keep_alive(axum::response::sse::KeepAlive::new().interval(std::time::Duration::from_secs(15)))
 }
 
 /// The original text of one request: real secrets. Served only when explicitly asked, never

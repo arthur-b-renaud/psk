@@ -10,6 +10,7 @@
 pub mod app;
 pub mod diff;
 pub mod feed;
+pub mod jsonfmt;
 pub mod render;
 
 use std::io::BufReader;
@@ -33,13 +34,22 @@ use feed::FeedMsg;
 /// not an error, just nothing to watch (brief §9).
 pub fn run(config: &psk_proxy::Config) -> Result<()> {
     let base = format!("http://{}", config.bind);
+    // No *total* timeout: `GET /events` is a long-lived stream, and a request-wide timeout would
+    // silently sever it (that was the "psk top stops updating after a few seconds" bug). Bound only
+    // the connect, so a proxy that is not running still fails fast; the one-shot requests below add
+    // their own per-request read timeout.
     let http = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(10))
+        .connect_timeout(Duration::from_secs(5))
         .build()
         .expect("client builds");
 
     // Cheap liveness check before taking over the terminal.
-    if http.get(format!("{base}/health")).send().is_err() {
+    if http
+        .get(format!("{base}/health"))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .is_err()
+    {
         println!(
             "psk top: no proxy answering at {base}.\n\
              Start one with `psk proxy`, then run `psk top` again."
@@ -112,7 +122,10 @@ fn event_loop(
                 Effect::Quit => return Ok(()),
                 Effect::RevealOriginal(id) => {
                     // Fetch the one original, on demand, never cached to disk.
-                    if let Ok(resp) = http.get(format!("{base}/events/{id}/original")).send()
+                    if let Ok(resp) = http
+                        .get(format!("{base}/events/{id}/original"))
+                        .timeout(Duration::from_secs(10))
+                        .send()
                         && resp.status().is_success()
                         && let Ok(text) = resp.text()
                     {
@@ -144,6 +157,10 @@ fn map_key(code: KeyCode, filtering: bool) -> Option<Key> {
     Some(match code {
         KeyCode::Up => Key::Up,
         KeyCode::Down => Key::Down,
+        KeyCode::PageUp => Key::PageUp,
+        KeyCode::PageDown => Key::PageDown,
+        KeyCode::Home => Key::Home,
+        KeyCode::End => Key::End,
         KeyCode::Enter => Key::Enter,
         KeyCode::Esc => Key::Escape,
         KeyCode::Backspace => Key::Backspace,
@@ -183,6 +200,10 @@ mod tests {
         assert_eq!(map_key(KeyCode::Char(' '), false), Some(Key::Pause));
         assert_eq!(map_key(KeyCode::Char('/'), false), Some(Key::Filter));
         assert_eq!(map_key(KeyCode::Char('x'), false), None);
+        // Scroll keys for the detail pane.
+        assert_eq!(map_key(KeyCode::PageDown, false), Some(Key::PageDown));
+        assert_eq!(map_key(KeyCode::Home, false), Some(Key::Home));
+        assert_eq!(map_key(KeyCode::End, false), Some(Key::End));
     }
 
     #[test]
