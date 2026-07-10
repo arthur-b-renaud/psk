@@ -75,10 +75,17 @@ fn load_config() -> Result<psk_proxy::Config> {
 
 // --- init / uninit ----------------------------------------------------------------------------
 
+/// The env var Claude Code reads to route requests through the proxy. `psk init` writes it so the
+/// user never has to `export ANTHROPIC_BASE_URL=...` by hand.
+const BASE_URL_VAR: &str = "ANTHROPIC_BASE_URL";
+
 fn cmd_init() -> Result<std::process::ExitCode> {
     let path = psk_init::default_settings_path()?;
-    let outcome = psk_init::init(&path).with_context(|| format!("editing {}", path.display()))?;
-    match outcome {
+    // The URL to point Claude Code at is exactly where the proxy binds.
+    let base_url = format!("http://{}", load_config()?.bind);
+
+    let hook = psk_init::init(&path).with_context(|| format!("editing {}", path.display()))?;
+    match hook {
         psk_init::Outcome::Added => println!(
             "psk: installed the PreToolUse hook ({}) in {}",
             psk_init::HOOK_COMMAND,
@@ -92,13 +99,34 @@ fn cmd_init() -> Result<std::process::ExitCode> {
         }
         _ => unreachable!("init returns Added or AlreadyPresent"),
     }
+
+    let env = psk_init::set_env(&path, BASE_URL_VAR, &base_url)
+        .with_context(|| format!("editing {}", path.display()))?;
+    match env {
+        psk_init::EnvOutcome::Set => {
+            println!("psk: pointed Claude Code at the proxy ({BASE_URL_VAR}={base_url})")
+        }
+        psk_init::EnvOutcome::Updated { previous } => println!(
+            "psk: updated {BASE_URL_VAR} to {base_url} (was {previous})"
+        ),
+        psk_init::EnvOutcome::Unchanged => {
+            println!("psk: {BASE_URL_VAR} already points at the proxy ({base_url})")
+        }
+        _ => unreachable!("set_env returns Set, Updated, or Unchanged"),
+    }
+
+    println!(
+        "\nNext: run `psk proxy` (leave it running), then start Claude Code in a new terminal —\nit picks up {BASE_URL_VAR} from settings on launch, so restart any open session."
+    );
     Ok(OK)
 }
 
 fn cmd_uninit() -> Result<std::process::ExitCode> {
     let path = psk_init::default_settings_path()?;
-    let outcome = psk_init::uninit(&path).with_context(|| format!("editing {}", path.display()))?;
-    match outcome {
+    let base_url = format!("http://{}", load_config()?.bind);
+
+    let hook = psk_init::uninit(&path).with_context(|| format!("editing {}", path.display()))?;
+    match hook {
         psk_init::Outcome::Removed => {
             println!("psk: removed the PreToolUse hook from {}", path.display())
         }
@@ -106,6 +134,18 @@ fn cmd_uninit() -> Result<std::process::ExitCode> {
             println!("psk: no PSK hook was installed in {}", path.display())
         }
         _ => unreachable!("uninit returns Removed or Absent"),
+    }
+
+    let env = psk_init::unset_env(&path, BASE_URL_VAR, &base_url)
+        .with_context(|| format!("editing {}", path.display()))?;
+    match env {
+        psk_init::EnvOutcome::Removed => {
+            println!("psk: unset {BASE_URL_VAR}; Claude Code now talks to the provider directly")
+        }
+        // Absent covers both "we never set it" and "the user re-pointed it themselves"; in the
+        // latter case leaving it be is the correct, non-clobbering behaviour.
+        psk_init::EnvOutcome::Absent => {}
+        _ => unreachable!("unset_env returns Removed or Absent"),
     }
     Ok(OK)
 }
@@ -122,10 +162,11 @@ fn cmd_proxy() -> Result<std::process::ExitCode> {
     let state = std::sync::Arc::new(psk_proxy::ProxyState::new(vault, config, home));
 
     println!("psk proxy is running on http://{bind}  (restore_mode = {mode:?})\n");
-    println!("  In another terminal, point your agent at it:\n");
-    println!("      export ANTHROPIC_BASE_URL=http://{bind}\n");
-    if mode == psk_proxy::RestoreMode::Execution {
-        println!("  execution mode: run `psk init` so the hook restores secrets at tool time.\n");
+    if psk_init::is_installed(&psk_init::default_settings_path()?).unwrap_or(false) {
+        println!("  `psk init` has wired Claude Code to this proxy. Start it in another terminal.\n");
+    } else {
+        println!("  Run `psk init` in another terminal to point Claude Code at this proxy,\n");
+        println!("  or set it yourself:  export ANTHROPIC_BASE_URL=http://{bind}\n");
     }
     // The last line before it blocks: the mistake to prevent is Ctrl-C'ing this, thinking the
     // command finished. Say plainly that it keeps running here.

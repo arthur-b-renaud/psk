@@ -60,6 +60,34 @@ impl Outcome {
     }
 }
 
+/// What a `set_env`/`unset_env` did. Separate from [`Outcome`] because setting a variable has a
+/// fourth case the hook never has: the key already exists with a *different* value, which we update
+/// rather than duplicate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvOutcome {
+    /// The variable was absent and has been set.
+    Set,
+    /// The variable existed with a different value and was updated. Carries the old value, so the
+    /// caller can report the change.
+    Updated { previous: String },
+    /// The variable was already exactly this value; nothing changed.
+    Unchanged,
+    /// The variable was removed.
+    Removed,
+    /// Nothing of ours to remove — the key was absent, or held a value we did not set.
+    Absent,
+}
+
+impl EnvOutcome {
+    /// Did this operation modify the file on disk?
+    pub fn changed(&self) -> bool {
+        matches!(
+            self,
+            EnvOutcome::Set | EnvOutcome::Updated { .. } | EnvOutcome::Removed
+        )
+    }
+}
+
 /// The default settings path, `~/.claude/settings.json`.
 pub fn default_settings_path() -> Result<PathBuf, InitError> {
     let home = std::env::var_os("HOME").ok_or(InitError::NoHome)?;
@@ -119,6 +147,58 @@ pub fn is_installed(path: &Path) -> Result<bool, InitError> {
                 .map(|entries| entries.iter().any(is_psk_entry))
         })
         .unwrap_or(false))
+}
+
+/// Set `env[key] = value` in `path`, creating the file (and parent) if absent.
+///
+/// This is what lets `psk init` point Claude Code at the proxy without the user ever exporting
+/// `ANTHROPIC_BASE_URL` by hand. Idempotent, and non-clobbering: unrelated `env` entries and every
+/// other top-level key are preserved. If the key is present with a different value it is *updated*
+/// (reported via [`EnvOutcome::Updated`]) rather than duplicated.
+pub fn set_env(path: &Path, key: &str, value: &str) -> Result<EnvOutcome, InitError> {
+    let mut root = read_or_empty(path)?;
+    let env = object_at(&mut root, "env", path)?;
+    let map = env.as_object_mut().expect("object_at yields an object");
+
+    match map.get(key).and_then(Value::as_str) {
+        Some(existing) if existing == value => Ok(EnvOutcome::Unchanged),
+        Some(existing) => {
+            let previous = existing.to_string();
+            map.insert(key.to_string(), Value::String(value.to_string()));
+            write(path, &root)?;
+            Ok(EnvOutcome::Updated { previous })
+        }
+        None => {
+            map.insert(key.to_string(), Value::String(value.to_string()));
+            write(path, &root)?;
+            Ok(EnvOutcome::Set)
+        }
+    }
+}
+
+/// Remove `env[key]` from `path`, but only if it currently equals `expected`.
+///
+/// The `expected` guard is deliberate: if the user re-pointed `ANTHROPIC_BASE_URL` somewhere else on
+/// purpose, `psk uninit` must not silently delete their setting. A mismatch — or a missing key, or a
+/// missing file — is [`EnvOutcome::Absent`], not an error.
+pub fn unset_env(path: &Path, key: &str, expected: &str) -> Result<EnvOutcome, InitError> {
+    let mut root = match read(path)? {
+        Some(v) => v,
+        None => return Ok(EnvOutcome::Absent),
+    };
+    let Some(map) = root.get_mut("env").and_then(Value::as_object_mut) else {
+        return Ok(EnvOutcome::Absent);
+    };
+
+    match map.get(key).and_then(Value::as_str) {
+        Some(v) if v == expected => {
+            map.remove(key);
+            prune_empty(&mut root);
+            write(path, &root)?;
+            Ok(EnvOutcome::Removed)
+        }
+        _ => Ok(EnvOutcome::Absent),
+    }
 }
 
 /// The hook entry PSK installs. Claude Code's shape: a matcher plus a list of hook commands.
@@ -182,7 +262,9 @@ fn array_at<'a>(
     })
 }
 
-/// Drop an empty `PreToolUse` array and, if that leaves `hooks` empty, drop `hooks` too.
+/// Return the file toward its pre-`init` shape: drop an empty `PreToolUse` array (and then an empty
+/// `hooks`), and drop an `env` object we emptied. Only containers left empty by a removal are
+/// pruned; a container the user still has other entries in is untouched.
 fn prune_empty(root: &mut Value) {
     let Some(obj) = root.as_object_mut() else {
         return;
@@ -198,6 +280,13 @@ fn prune_empty(root: &mut Value) {
         if hooks.is_empty() {
             obj.remove("hooks");
         }
+    }
+    if obj
+        .get("env")
+        .and_then(Value::as_object)
+        .is_some_and(Map::is_empty)
+    {
+        obj.remove("env");
     }
 }
 
@@ -358,6 +447,107 @@ mod tests {
         assert!(matches!(init(&f.0), Err(InitError::Shape { .. })));
         // The user's file is untouched.
         assert_eq!(f.read()["hooks"], "not an object");
+    }
+
+    const URL: &str = "http://127.0.0.1:8787";
+
+    #[test]
+    fn set_env_creates_the_file_and_sets_the_variable() {
+        let f = TempFile::new("env-create");
+        assert_eq!(
+            set_env(&f.0, "ANTHROPIC_BASE_URL", URL).unwrap(),
+            EnvOutcome::Set
+        );
+        assert_eq!(f.read()["env"]["ANTHROPIC_BASE_URL"], URL);
+    }
+
+    #[test]
+    fn set_env_is_idempotent() {
+        let f = TempFile::new("env-idem");
+        set_env(&f.0, "ANTHROPIC_BASE_URL", URL).unwrap();
+        assert_eq!(
+            set_env(&f.0, "ANTHROPIC_BASE_URL", URL).unwrap(),
+            EnvOutcome::Unchanged
+        );
+    }
+
+    #[test]
+    fn set_env_updates_a_different_value_and_reports_the_old_one() {
+        let f = TempFile::new("env-update");
+        set_env(&f.0, "ANTHROPIC_BASE_URL", "http://old:1234").unwrap();
+        assert_eq!(
+            set_env(&f.0, "ANTHROPIC_BASE_URL", URL).unwrap(),
+            EnvOutcome::Updated {
+                previous: "http://old:1234".into()
+            }
+        );
+        assert_eq!(f.read()["env"]["ANTHROPIC_BASE_URL"], URL);
+    }
+
+    #[test]
+    fn set_env_preserves_unrelated_settings_and_other_env_vars() {
+        let f = TempFile::new("env-preserve");
+        f.put(&json!({
+            "model": "opus",
+            "env": {"FOO": "bar"}
+        }));
+        assert_eq!(
+            set_env(&f.0, "ANTHROPIC_BASE_URL", URL).unwrap(),
+            EnvOutcome::Set
+        );
+        let v = f.read();
+        assert_eq!(v["model"], "opus");
+        assert_eq!(v["env"]["FOO"], "bar");
+        assert_eq!(v["env"]["ANTHROPIC_BASE_URL"], URL);
+    }
+
+    #[test]
+    fn unset_env_removes_our_value_and_prunes_an_env_it_emptied() {
+        let f = TempFile::new("env-unset");
+        set_env(&f.0, "ANTHROPIC_BASE_URL", URL).unwrap();
+        assert_eq!(
+            unset_env(&f.0, "ANTHROPIC_BASE_URL", URL).unwrap(),
+            EnvOutcome::Removed
+        );
+        // env held only our key, so the whole object is gone.
+        assert_eq!(f.read().get("env"), None);
+    }
+
+    #[test]
+    fn unset_env_leaves_a_foreign_value_alone() {
+        let f = TempFile::new("env-foreign");
+        f.put(&json!({"env": {"ANTHROPIC_BASE_URL": "http://somewhere-else:9000"}}));
+        // The user pointed it elsewhere; uninit must not delete their setting.
+        assert_eq!(
+            unset_env(&f.0, "ANTHROPIC_BASE_URL", URL).unwrap(),
+            EnvOutcome::Absent
+        );
+        assert_eq!(
+            f.read()["env"]["ANTHROPIC_BASE_URL"],
+            "http://somewhere-else:9000"
+        );
+    }
+
+    #[test]
+    fn unset_env_keeps_sibling_env_vars() {
+        let f = TempFile::new("env-sibling");
+        f.put(&json!({"env": {"ANTHROPIC_BASE_URL": URL, "FOO": "bar"}}));
+        assert_eq!(
+            unset_env(&f.0, "ANTHROPIC_BASE_URL", URL).unwrap(),
+            EnvOutcome::Removed
+        );
+        let v = f.read();
+        assert_eq!(v["env"]["FOO"], "bar");
+        assert_eq!(v["env"].as_object().unwrap().get("ANTHROPIC_BASE_URL"), None);
+    }
+
+    #[test]
+    fn unset_env_on_a_missing_file_is_absent() {
+        let f = TempFile::new("env-missing");
+        assert_eq!(
+            unset_env(&f.0, "ANTHROPIC_BASE_URL", URL).unwrap(),
+            EnvOutcome::Absent
+        );
     }
 
     #[test]

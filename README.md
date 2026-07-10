@@ -85,18 +85,16 @@ streamed request feed.
 
 ```sh
 cargo install --path crates/psk-cli   # builds the `psk` binary
-psk init                              # installs the PreToolUse restore hook
-psk proxy                             # prints the ANTHROPIC_BASE_URL line to export
+psk init                              # installs the restore hook AND points Claude Code at the proxy
+psk proxy                             # start the proxy; leave it running
 ```
 
-Then, in the shell where you run your agent:
+`psk init` writes both halves of the wiring into `~/.claude/settings.json`: the `PreToolUse` restore
+hook, and `env.ANTHROPIC_BASE_URL = http://127.0.0.1:8787` so Claude Code routes through the proxy
+with no manual `export`. Claude Code reads that env on launch, so start (or restart) it after
+`psk init`. Run `psk uninit` to remove both cleanly.
 
-```sh
-export ANTHROPIC_BASE_URL=http://127.0.0.1:8787
-```
-
-`psk top` is the one command not yet built — it prints where to watch the raw event stream in the
-meantime.
+Watch traffic live with `psk top`; see savings with `psk gain`.
 
 ## Requirements
 

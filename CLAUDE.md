@@ -408,6 +408,26 @@ format* is integration-tested against the compiled binary in `psk-cli/tests/hook
 loop (mint via proxy → restore via hook → block a mangled fake → fail open when down) was driven by
 hand and confirmed.
 
+### `psk init` wires *both* halves of the integration
+
+`psk init` edits `~/.claude/settings.json` twice, and `psk uninit` reverses both:
+
+1. **The `PreToolUse` hook** — the restore point above (`psk_init::init`/`uninit`).
+2. **`env.ANTHROPIC_BASE_URL`** — set to `http://<config.bind>` so Claude Code routes through the
+   proxy with no manual `export` (`psk_init::set_env`/`unset_env`). Claude Code reads `settings.json`
+   `env` on launch, so the change takes effect on the next session start.
+
+Two properties carried over from the hook editing, because this touches the user's real settings:
+
+- **The base URL is computed by the CLI, not `psk-init`.** `psk-init` has no dependency on
+  `psk-proxy`, so it cannot know the bind address; `cmd_init` passes `format!("http://{}",
+  load_config()?.bind)`. Keep the crate graph that way — `psk-init` stays a pure settings-editor.
+- **`unset_env` only removes a value it recognises as ours.** It takes the `expected` URL and
+  leaves the key untouched if the user re-pointed it elsewhere (returns `EnvOutcome::Absent`, not an
+  error). Same non-clobbering ethos as `is_psk_entry` recognising the hook by command, not by exact
+  equality. `EnvOutcome` is separate from `Outcome` for one reason: setting a var has a case the
+  hook never has — the key present with a *different* value, which is `Updated`, not a duplicate.
+
 ## 7d. The inspector TUI (`psk top`)
 
 A read-only ratatui client of `GET /events`. It never touches traffic, so it attaches and detaches
