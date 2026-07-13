@@ -49,27 +49,29 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let h = app.header();
     let dim = Style::default().fg(PUNCT);
     let label = |s: &str| Span::styled(s.to_string(), dim);
-    let value =
-        |n: usize, c: Color| Span::styled(n.to_string(), Style::default().fg(c).add_modifier(Modifier::BOLD));
+    let value = |n: usize, c: Color| {
+        Span::styled(
+            n.to_string(),
+            Style::default().fg(c).add_modifier(Modifier::BOLD),
+        )
+    };
 
     // The per-kind legend, coloured like the fakes it counts.
     let mut legend: Vec<Span> = Vec::new();
     for (k, n) in &h.by_kind {
         legend.push(Span::raw(" "));
-        legend.push(Span::styled(
-            format!("{k}:{n}"),
-            Style::default().fg(FAKE),
-        ));
+        legend.push(Span::styled(format!("{k}:{n}"), Style::default().fg(FAKE)));
     }
 
-    let near_miss_color = if h.near_misses_blocked > 0 { REAL } else { PUNCT };
+    let near_miss_color = if h.near_misses_blocked > 0 {
+        REAL
+    } else {
+        PUNCT
+    };
 
     let body = vec![
         Line::from(vec![
-            Span::styled(
-                "PSK",
-                Style::default().fg(KEY).add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("PSK", Style::default().fg(KEY).add_modifier(Modifier::BOLD)),
             Span::styled(" inspector", Style::default().add_modifier(Modifier::BOLD)),
             Span::styled(" — what left this machine", dim),
         ]),
@@ -83,7 +85,9 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             label("   near-misses blocked "),
             Span::styled(
                 h.near_misses_blocked.to_string(),
-                Style::default().fg(near_miss_color).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(near_miss_color)
+                    .add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::from(
@@ -110,11 +114,20 @@ fn draw_list(f: &mut Frame, area: Rect, app: &App) {
     let rows: Vec<ListItem> = app.visible().iter().map(|e| list_row(e)).collect();
 
     let mut title = vec![
-        Span::styled(" Requests ", Style::default().fg(KEY).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("({}) ", app.visible().len()), Style::default().fg(PUNCT)),
+        Span::styled(
+            " Requests ",
+            Style::default().fg(KEY).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("({}) ", app.visible().len()),
+            Style::default().fg(PUNCT),
+        ),
     ];
     if app.paused() {
-        title.push(Span::styled("[PAUSED] ", Style::default().fg(NUMBER).add_modifier(Modifier::BOLD)));
+        title.push(Span::styled(
+            "[PAUSED] ",
+            Style::default().fg(NUMBER).add_modifier(Modifier::BOLD),
+        ));
     }
     if app.grouped() {
         title.push(Span::styled("[grouped] ", Style::default().fg(PUNCT)));
@@ -130,7 +143,11 @@ fn draw_list(f: &mut Frame, area: Rect, app: &App) {
     state.select(Some(app.selected()));
     f.render_stateful_widget(
         List::new(rows)
-            .block(Block::default().borders(Borders::ALL).title(Line::from(title)))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(Line::from(title)),
+            )
             .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
             .highlight_symbol("> "),
         area,
@@ -174,10 +191,12 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, original: Option<&str>) {
 
     let lines: Vec<Line> = match original {
         // Reveal: diff the original against the rewritten. Real values are on screen only now,
-        // only for this request, and never persisted.
+        // only for this request, and never persisted. Always the full form — the diff is
+        // positional, and folding could collapse the two sides differently.
         Some(orig) => reveal_lines(&event.rewritten_text, orig),
-        // Safe view: the rewritten body, pretty-printed and syntax-highlighted.
-        None => detail_lines(&event.rewritten_text),
+        // Safe view: the rewritten body, pretty-printed and syntax-highlighted, with technical
+        // subtrees folded unless the user expanded them.
+        None => detail_lines(&event.rewritten_text, app.expanded()),
     };
 
     let entities: usize = event.entity_counts_by_kind.values().sum();
@@ -188,21 +207,30 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, original: Option<&str>) {
                 Style::default().fg(KEY).add_modifier(Modifier::BOLD),
             ),
             Span::styled("· ", Style::default().fg(PUNCT)),
-            Span::styled("REVEALED", Style::default().fg(REAL).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "REVEALED",
+                Style::default().fg(REAL).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" — real values, local only ", Style::default().fg(PUNCT)),
         ])
     } else {
+        let view = if app.expanded() {
+            "· full "
+        } else {
+            "· folded "
+        };
         Line::from(vec![
             Span::styled(
                 format!(" Request #{} ", event.id),
                 Style::default().fg(KEY).add_modifier(Modifier::BOLD),
             ),
             Span::styled(format!("· {} ", event.model), Style::default().fg(PUNCT)),
+            Span::styled(format!("· {entities} hidden "), Style::default().fg(STRING)),
             Span::styled(
-                format!("· {entities} hidden "),
-                Style::default().fg(STRING),
+                "· rewritten (what the provider saw) ",
+                Style::default().fg(PUNCT),
             ),
-            Span::styled("· rewritten (what the provider saw) ", Style::default().fg(PUNCT)),
+            Span::styled(view, Style::default().fg(PUNCT)),
         ])
     };
 
@@ -219,14 +247,18 @@ fn draw_detail(f: &mut Frame, area: Rect, app: &App, original: Option<&str>) {
     );
 }
 
-/// The rewritten body, pretty-printed and coloured. Falls back to plain fake-highlighting if the
-/// body is not JSON (PSK forwards non-JSON bodies untouched).
-fn detail_lines(text: &str) -> Vec<Line<'static>> {
+/// The rewritten body, pretty-printed and coloured. Folded by default: tool definitions, schemas,
+/// and calls collapse to one-line summaries — but a subtree carrying a substituted secret never
+/// folds (see `jsonfmt::pretty_folded`), so nothing the pane exists to show is hidden. Falls back
+/// to plain fake-highlighting if the body is not JSON (PSK forwards non-JSON bodies untouched).
+fn detail_lines(text: &str, expanded: bool) -> Vec<Line<'static>> {
     if is_json(text) {
-        jsonfmt::pretty(text)
-            .lines()
-            .map(highlight_json_line)
-            .collect()
+        let pretty = if expanded {
+            jsonfmt::pretty(text)
+        } else {
+            jsonfmt::pretty_folded(text, MARKER)
+        };
+        pretty.lines().map(highlight_json_line).collect()
     } else {
         text.lines().map(highlight_plain).collect()
     }
@@ -266,7 +298,10 @@ fn reveal_lines(rewritten: &str, original: &str) -> Vec<Line<'static>> {
             }
             // The real value — red gutter and red text, so it is unmistakable.
             DiffLine::Original(s) => Line::from(vec![
-                Span::styled("  real  ", Style::default().fg(REAL).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "  real  ",
+                    Style::default().fg(REAL).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(s.trim_start().to_string(), Style::default().fg(REAL)),
             ]),
         })
@@ -297,7 +332,10 @@ fn highlight_json_line(line: &str) -> Line<'static> {
         if rest.is_char_boundary(end) {
             let after = rest[end..].trim_start();
             if let Some(value) = after.strip_prefix(':') {
-                spans.push(Span::styled(rest[..end].to_string(), Style::default().fg(KEY)));
+                spans.push(Span::styled(
+                    rest[..end].to_string(),
+                    Style::default().fg(KEY),
+                ));
                 spans.push(Span::styled(": ".to_string(), Style::default().fg(PUNCT)));
                 value_spans(value.trim_start(), &mut spans);
                 return Line::from(spans);
@@ -368,7 +406,10 @@ fn string_value_spans(quoted: &str, spans: &mut Vec<Span<'static>>) {
 
     // Anything after the closing quote (unusual for a pure value) is punctuation.
     if end < quoted.len() {
-        spans.push(Span::styled(quoted[end..].to_string(), Style::default().fg(PUNCT)));
+        spans.push(Span::styled(
+            quoted[end..].to_string(),
+            Style::default().fg(PUNCT),
+        ));
     }
 }
 
@@ -412,14 +453,14 @@ fn draw_hints(f: &mut Frame, area: Rect, app: &App) {
     } else {
         match app.mode() {
             Mode::List => "↑↓ move · Enter open · g group · space pause · / filter · q quit".into(),
-            Mode::Detail => "↑↓/PgUp/PgDn scroll · r reveal original · Esc back · q quit".into(),
+            Mode::Detail => {
+                let x = if app.expanded() { "x fold" } else { "x expand" };
+                format!("↑↓/PgUp/PgDn scroll · {x} · r reveal original · Esc back · q quit")
+            }
             Mode::Reveal(_) => "↑↓ scroll · Esc back to safe view · q quit".into(),
         }
     };
-    f.render_widget(
-        Paragraph::new(hint).style(Style::default().fg(PUNCT)),
-        area,
-    );
+    f.render_widget(Paragraph::new(hint).style(Style::default().fg(PUNCT)), area);
 }
 
 /// `https://api.anthropic.com/v1/messages?beta=true` -> `api.anthropic.com/v1/messages`.
@@ -467,10 +508,18 @@ mod tests {
     fn a_key_line_splits_into_key_and_value() {
         let line = highlight_json_line(r#"  "model": "claude","#);
         // First non-indent span is the key, styled in the key colour.
-        let key_span = line.spans.iter().find(|s| s.content.contains("model")).unwrap();
+        let key_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("model"))
+            .unwrap();
         assert_eq!(key_span.style.fg, Some(KEY));
         // The value keeps the string colour.
-        let val_span = line.spans.iter().find(|s| s.content.contains("claude")).unwrap();
+        let val_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("claude"))
+            .unwrap();
         assert_eq!(val_span.style.fg, Some(STRING));
     }
 
@@ -479,7 +528,40 @@ mod tests {
         // A substituted secret embedded in prompt text must pop even mid-string.
         let fake = format!("{MARKER}abcd1234");
         let line = highlight_json_line(&format!(r#"  "content": "deploy {fake} now""#));
-        let flagged = line.spans.iter().find(|s| s.content.contains(&fake)).unwrap();
+        let flagged = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains(&fake))
+            .unwrap();
         assert_eq!(flagged.style.fg, Some(FAKE));
+    }
+
+    #[test]
+    fn the_folded_detail_view_hides_tool_descriptions_and_x_brings_them_back() {
+        let desc = "an awfully long tool description ".repeat(30);
+        let body = serde_json::json!({
+            "model": "claude",
+            "tools": [{ "name": "Bash", "description": desc,
+                        "input_schema": { "type": "object" } }],
+            "messages": [{ "role": "user", "content": "hello" }]
+        })
+        .to_string();
+
+        let text_of = |lines: &[Line]| -> String {
+            lines
+                .iter()
+                .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+                .collect()
+        };
+
+        let folded = detail_lines(&body, false);
+        let full = detail_lines(&body, true);
+        assert!(folded.len() < full.len(), "folding shortens the pane");
+        assert!(!text_of(&folded).contains("awfully long tool description"));
+        assert!(
+            text_of(&folded).contains("hello"),
+            "the conversation survives"
+        );
+        assert!(text_of(&full).contains("awfully long tool description"));
     }
 }

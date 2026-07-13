@@ -55,6 +55,10 @@ pub struct App {
     /// Vertical scroll offset of the detail/reveal pane, in lines. Reset whenever a different
     /// request is opened. Clamped to the content by the renderer.
     detail_scroll: u16,
+    /// Whether the detail pane shows the full body (`true`) or folds the technical subtrees —
+    /// tool definitions, schemas, tool calls — to one-line summaries (`false`, the default).
+    /// Reset to folded on every open, so each request starts readable.
+    expanded: bool,
     /// Near-misses blocked at the hook. Not on the event stream (it carries no secrets and no hook
     /// data); the driver reads it from `stats.json` and pushes it in.
     pub near_misses_blocked: u64,
@@ -72,6 +76,7 @@ impl App {
             filtering: false,
             mode: Mode::List,
             detail_scroll: 0,
+            expanded: false,
             near_misses_blocked: 0,
         }
     }
@@ -181,6 +186,17 @@ impl App {
             Key::Enter => {
                 if self.selected_event().is_some() {
                     self.mode = Mode::Detail;
+                    self.detail_scroll = 0;
+                    // Every request opens folded — the readable default the pane exists for.
+                    self.expanded = false;
+                }
+            }
+            Key::Expand => {
+                // Only the safe detail view folds; the reveal diff always runs over the full
+                // form, so both sides line up.
+                if self.mode == Mode::Detail {
+                    self.expanded = !self.expanded;
+                    // Line numbers just changed wholesale; the old offset points nowhere useful.
                     self.detail_scroll = 0;
                 }
             }
@@ -301,6 +317,10 @@ impl App {
     pub fn detail_scroll(&self) -> u16 {
         self.detail_scroll
     }
+    /// Whether the detail pane shows the full body rather than the folded view.
+    pub fn expanded(&self) -> bool {
+        self.expanded
+    }
     /// The selected row's index in the visible list, or 0 when the list is empty.
     pub fn selected(&self) -> usize {
         self.selected_index().unwrap_or(0)
@@ -331,6 +351,7 @@ pub enum Key {
     Enter,
     Escape,
     Reveal,
+    Expand,
     Group,
     Pause,
     Filter,
@@ -554,15 +575,61 @@ mod tests {
 
         app.on_key(Key::Down);
         app.on_key(Key::Down);
-        assert_eq!(app.detail_scroll(), 2, "Down scrolls the pane in detail mode");
-        assert_eq!(app.selected_event().unwrap().id, 2, "selection is untouched");
+        assert_eq!(
+            app.detail_scroll(),
+            2,
+            "Down scrolls the pane in detail mode"
+        );
+        assert_eq!(
+            app.selected_event().unwrap().id,
+            2,
+            "selection is untouched"
+        );
 
         app.on_key(Key::Up);
         assert_eq!(app.detail_scroll(), 1);
         app.on_key(Key::Home);
         assert_eq!(app.detail_scroll(), 0);
         app.on_key(Key::End);
-        assert_eq!(app.detail_scroll(), u16::MAX, "End asks for the bottom; render clamps it");
+        assert_eq!(
+            app.detail_scroll(),
+            u16::MAX,
+            "End asks for the bottom; render clamps it"
+        );
+    }
+
+    #[test]
+    fn x_toggles_folding_in_detail_and_resets_the_scroll() {
+        let mut app = App::new(10);
+        app.push(event(1, "u", 0, 0, 0));
+        // In the list, x is a no-op — there is no pane to expand.
+        app.on_key(Key::Expand);
+        assert!(!app.expanded());
+
+        app.on_key(Key::Enter);
+        assert!(!app.expanded(), "a request opens folded by default");
+        app.on_key(Key::Down); // scroll somewhere
+        app.on_key(Key::Expand);
+        assert!(app.expanded());
+        assert_eq!(
+            app.detail_scroll(),
+            0,
+            "toggling refolds the layout, so scroll resets"
+        );
+        app.on_key(Key::Expand);
+        assert!(!app.expanded(), "x folds back");
+    }
+
+    #[test]
+    fn reopening_a_request_starts_folded_again() {
+        let mut app = App::new(10);
+        app.push(event(1, "u", 0, 0, 0));
+        app.on_key(Key::Enter);
+        app.on_key(Key::Expand);
+        assert!(app.expanded());
+        app.on_key(Key::Escape);
+        app.on_key(Key::Enter);
+        assert!(!app.expanded(), "folded is the default on every open");
     }
 
     #[test]

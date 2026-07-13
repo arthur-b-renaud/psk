@@ -167,6 +167,7 @@ fn map_key(code: KeyCode, filtering: bool) -> Option<Key> {
         KeyCode::Char(c) if filtering => Key::Char(c),
         KeyCode::Char('q') => Key::Quit,
         KeyCode::Char('r') => Key::Reveal,
+        KeyCode::Char('x') => Key::Expand,
         KeyCode::Char('g') => Key::Group,
         KeyCode::Char(' ') => Key::Pause,
         KeyCode::Char('/') => Key::Filter,
@@ -197,9 +198,10 @@ mod tests {
     fn navigation_keys_map_outside_filter_mode() {
         assert_eq!(map_key(KeyCode::Char('q'), false), Some(Key::Quit));
         assert_eq!(map_key(KeyCode::Char('r'), false), Some(Key::Reveal));
+        assert_eq!(map_key(KeyCode::Char('x'), false), Some(Key::Expand));
         assert_eq!(map_key(KeyCode::Char(' '), false), Some(Key::Pause));
         assert_eq!(map_key(KeyCode::Char('/'), false), Some(Key::Filter));
-        assert_eq!(map_key(KeyCode::Char('x'), false), None);
+        assert_eq!(map_key(KeyCode::Char('z'), false), None);
         // Scroll keys for the detail pane.
         assert_eq!(map_key(KeyCode::PageDown, false), Some(Key::PageDown));
         assert_eq!(map_key(KeyCode::Home, false), Some(Key::Home));

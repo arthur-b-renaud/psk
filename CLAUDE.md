@@ -466,6 +466,19 @@ one substituted value shows as a single changed line in identical, highlighted c
 scrolls (`↑↓`, `PgUp`/`PgDn`, `Home`/`End`), since a full request body is tall; scroll is tracked in
 `app.rs` and clamped to the content by the renderer.
 
+**Technical subtrees open folded** (`jsonfmt::pretty_folded`, toggled per request with `x`). A
+Claude Code request is dominated by tool definitions, schemas, and tool calls; unfolded, the parts
+a human reads are buried. Folded by default: entries of the top-level `tools` array, any
+`input_schema`, `tool_use`/`tool_result` blocks anywhere, and the top-level `system` prompt — each
+replaced by a one-line summary keeping `type`/`name` and the size. Two overrides are invariants,
+not tuning: a node under ~400 pretty chars never folds (nothing to save), and **a subtree
+containing the marker never folds** — the pane exists to show what was hidden, so a fold must not
+hide the evidence; only marker-free siblings collapse. The reveal diff always uses the *full*
+form on both sides: it is positional, and folding could collapse the two sides differently. The
+`tools`/`system` rules are positional (top level only), so a `"tools"` key inside a message is
+treated as conversation content, not folded. Incidentally: PSK's own hook blocks any source file
+carrying the literal marker string, so tests reference `psk_proxy::MARKER` instead of spelling it.
+
 ## 8. Dependencies
 
 Justified additions beyond the brief's §11 list:
