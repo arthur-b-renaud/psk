@@ -1,6 +1,6 @@
 [package]
 name = "psk-cli"
-description = "The `psk` binary: scan / proxy / hook / init / uninit / gain / test / top."
+description = "The `psk` binary: scan / proxy / run / hook / init / uninit / gain / test / top."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -21,6 +21,7 @@ psk-vault = { path = "../psk-vault" }
 
 anyhow.workspace = true
 clap.workspace = true
+libc.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

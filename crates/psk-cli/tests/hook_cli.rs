@@ -12,7 +12,11 @@ use std::process::{Command, Stdio};
 /// fail-open path). Returns (exit code, stdout, stderr).
 fn run_hook(stdin: &str) -> (i32, String, String) {
     let bin = env!("CARGO_BIN_EXE_psk");
-    let home = std::env::temp_dir().join(format!("psk-hookcli-{}", std::process::id()));
+    // Unique per call: the tests run in parallel in one process, so a PID-only path would be shared
+    // and one test's cleanup could delete another's config mid-run (a real race that flaked here).
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let seq = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let home = std::env::temp_dir().join(format!("psk-hookcli-{}-{seq}", std::process::id()));
     let _ = std::fs::remove_dir_all(&home);
     std::fs::create_dir_all(&home).unwrap();
     // Point at a port nothing is listening on, so restore fails and the hook must fail open.

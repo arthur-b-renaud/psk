@@ -85,14 +85,21 @@ streamed request feed.
 
 ```sh
 cargo install --path crates/psk-cli   # builds the `psk` binary
-psk init                              # installs the restore hook AND points Claude Code at the proxy
-psk proxy                             # start the proxy; leave it running
+psk init                              # installs the restore hook AND the `claude` shim
+export PATH="$HOME/.psk/bin:$PATH"    # one-time; add to your shell rc (psk init prints this)
+claude                                # routes through the proxy, which starts on demand
 ```
 
-`psk init` writes both halves of the wiring into `~/.claude/settings.json`: the `PreToolUse` restore
-hook, and `env.ANTHROPIC_BASE_URL = http://127.0.0.1:8787` so Claude Code routes through the proxy
-with no manual `export`. Claude Code reads that env on launch, so start (or restart) it after
-`psk init`. Run `psk uninit` to remove both cleanly.
+`psk init` installs two things: the `PreToolUse` restore **hook** in `~/.claude/settings.json`, and
+a transparent `claude` **shim** at `~/.psk/bin/claude`. Once `~/.psk/bin` is on your `PATH`, typing
+`claude` runs it through `psk run`, which **starts the proxy on demand** and points that session at
+it — so you never have to keep a proxy terminal open, and a stopped proxy never breaks `claude`
+(it just launches unprotected). You can still run `psk proxy` by hand to watch one in the
+foreground. Run `psk uninit` to remove the hook and the shim cleanly.
+
+> Upgrading from an older PSK? Earlier versions wrote `env.ANTHROPIC_BASE_URL` into
+> `settings.json`, which broke `claude` whenever the proxy wasn't running. `psk init` now removes
+> that automatically.
 
 Watch traffic live with `psk top`; see savings with `psk gain`.
 

@@ -408,25 +408,45 @@ format* is integration-tested against the compiled binary in `psk-cli/tests/hook
 loop (mint via proxy → restore via hook → block a mangled fake → fail open when down) was driven by
 hand and confirmed.
 
-### `psk init` wires *both* halves of the integration
+### `psk init` wires the integration — hook in settings, base URL in the shim
 
-`psk init` edits `~/.claude/settings.json` twice, and `psk uninit` reverses both:
+`psk init` installs two things, and `psk uninit` reverses both:
 
-1. **The `PreToolUse` hook** — the restore point above (`psk_init::init`/`uninit`).
-2. **`env.ANTHROPIC_BASE_URL`** — set to `http://<config.bind>` so Claude Code routes through the
-   proxy with no manual `export` (`psk_init::set_env`/`unset_env`). Claude Code reads `settings.json`
-   `env` on launch, so the change takes effect on the next session start.
+1. **The `PreToolUse` hook** in `~/.claude/settings.json` — the restore point above
+   (`psk_init::init`/`uninit`).
+2. **The transparent `claude` shim** at `~/.psk/bin/claude` (`psk_cli::shim`) — a `/bin/sh` wrapper
+   that `exec`s `psk run` (pinned to the absolute psk path). The user puts `~/.psk/bin` on `PATH`
+   once; thereafter typing `claude` routes through the launcher.
 
-Two properties carried over from the hook editing, because this touches the user's real settings:
+**Why the base URL is *not* in `settings.json` anymore.** Earlier versions wrote
+`env.ANTHROPIC_BASE_URL = http://<config.bind>` there. That was a landmine: `settings.json` `env` is
+static and read once at launch, but the proxy's liveness is dynamic — so any time the proxy was not
+running, *every* `claude` invocation pointed at a dead port and failed. That directly contradicts
+the fail-open invariant (§4). We confirmed a `SessionStart` hook cannot fix it either: Claude Code
+gives no documented ordering guarantee that the hook runs before the first API request, and a hook
+cannot retro-modify the `env` the launched process already read.
+
+**`psk run` (the launcher, `psk_cli::run`)** owns the base URL instead, setting it **only in the
+child's environment and only when the proxy is confirmed up**:
+- Health-check via `client::HttpRestore::is_up()`. If down, spawn `psk proxy` **detached**
+  (`setsid`, stdio → `~/.psk/proxy.log`, never waited on) and poll `/health` ~3s.
+- Resolve the *real* `claude` by walking `PATH`, skipping `~/.psk/bin`, so the shim never execs
+  itself. The child's `PATH` also has the shim dir stripped (belt-and-suspenders against recursion;
+  protection still reaches a nested `claude` via the inherited env var).
+- Set `ANTHROPIC_BASE_URL` **iff** the proxy is up. If it is down and the *inherited* value is our
+  own bind URL, **remove** it (it would resurrect the landmine); a *different* inherited value is
+  left alone (it may be a third-party gateway). Either way `claude` still launches — unprotected but
+  never blocked.
+
+Two properties preserved from the old settings-editing, because this still touches the user's setup:
 
 - **The base URL is computed by the CLI, not `psk-init`.** `psk-init` has no dependency on
-  `psk-proxy`, so it cannot know the bind address; `cmd_init` passes `format!("http://{}",
-  load_config()?.bind)`. Keep the crate graph that way — `psk-init` stays a pure settings-editor.
-- **`unset_env` only removes a value it recognises as ours.** It takes the `expected` URL and
-  leaves the key untouched if the user re-pointed it elsewhere (returns `EnvOutcome::Absent`, not an
-  error). Same non-clobbering ethos as `is_psk_entry` recognising the hook by command, not by exact
-  equality. `EnvOutcome` is separate from `Outcome` for one reason: setting a var has a case the
-  hook never has — the key present with a *different* value, which is `Updated`, not a duplicate.
+  `psk-proxy` and knows nothing of `~/.psk`; it stays a pure `settings.json` editor. The shim and
+  launcher therefore live in `psk-cli`, which already resolves `psk_home()` and the bind address.
+- **Legacy cleanup is non-clobbering.** `psk init` calls `psk_init::unset_env` to remove the old
+  `env.ANTHROPIC_BASE_URL` landmine from anyone who ran the previous version — guarded by the
+  `expected` URL, so a user-repointed value is left untouched (`EnvOutcome::Absent`). This is what
+  un-breaks an existing install. `psk_init::set_env` is now unused by the CLI but kept in the crate.
 
 ## 7d. The inspector TUI (`psk top`)
 

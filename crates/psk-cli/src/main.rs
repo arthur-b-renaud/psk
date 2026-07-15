@@ -2,6 +2,8 @@
 //! there. `anyhow` at this boundary (brief §13), `thiserror` in the libraries.
 
 mod client;
+mod run;
+mod shim;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -27,6 +29,12 @@ enum Command {
     },
     /// Start the local reverse proxy. Prints the ANTHROPIC_BASE_URL line to export.
     Proxy,
+    /// Launch `claude` through the proxy: starts it if needed, then execs claude. This is what the
+    /// installed `~/.psk/bin/claude` shim calls; everything after `run` is passed to claude.
+    Run {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        rest: Vec<String>,
+    },
     /// The PreToolUse restore handler. Reads Claude Code's hook JSON on stdin.
     Hook,
     /// Install PSK's PreToolUse hook into ~/.claude/settings.json.
@@ -56,6 +64,7 @@ fn run(command: Command) -> Result<std::process::ExitCode> {
     match command {
         Command::Scan { file } => cmd_scan(file),
         Command::Proxy => cmd_proxy(),
+        Command::Run { rest } => run::cmd_run(rest),
         Command::Hook => cmd_hook(),
         Command::Init => cmd_init(),
         Command::Uninit => cmd_uninit(),
@@ -75,14 +84,14 @@ fn load_config() -> Result<psk_proxy::Config> {
 
 // --- init / uninit ----------------------------------------------------------------------------
 
-/// The env var Claude Code reads to route requests through the proxy. `psk init` writes it so the
-/// user never has to `export ANTHROPIC_BASE_URL=...` by hand.
+/// The env var Claude Code reads to route requests through the proxy. Earlier versions of `psk
+/// init` wrote it into `settings.json`; that was a landmine — a static URL pointing at a proxy that
+/// might be down, breaking `claude` (`CLAUDE.md` §4). The base URL is now set per-process by the
+/// `claude` shim (`run.rs`), and `psk init` only *removes* any stale settings.json copy.
 const BASE_URL_VAR: &str = "ANTHROPIC_BASE_URL";
 
 fn cmd_init() -> Result<std::process::ExitCode> {
     let path = psk_init::default_settings_path()?;
-    // The URL to point Claude Code at is exactly where the proxy binds.
-    let base_url = format!("http://{}", load_config()?.bind);
 
     let hook = psk_init::init(&path).with_context(|| format!("editing {}", path.display()))?;
     match hook {
@@ -100,24 +109,43 @@ fn cmd_init() -> Result<std::process::ExitCode> {
         _ => unreachable!("init returns Added or AlreadyPresent"),
     }
 
-    let env = psk_init::set_env(&path, BASE_URL_VAR, &base_url)
+    // Migrate away from the old settings.json landmine: remove env.ANTHROPIC_BASE_URL if it is
+    // still ours (guarded, so a user-repointed URL is left alone). This is what un-breaks anyone
+    // who ran the previous `psk init` and then didn't leave a proxy running.
+    let base_url = format!("http://{}", load_config()?.bind);
+    let env = psk_init::unset_env(&path, BASE_URL_VAR, &base_url)
         .with_context(|| format!("editing {}", path.display()))?;
-    match env {
-        psk_init::EnvOutcome::Set => {
-            println!("psk: pointed Claude Code at the proxy ({BASE_URL_VAR}={base_url})")
-        }
-        psk_init::EnvOutcome::Updated { previous } => println!(
-            "psk: updated {BASE_URL_VAR} to {base_url} (was {previous})"
-        ),
-        psk_init::EnvOutcome::Unchanged => {
-            println!("psk: {BASE_URL_VAR} already points at the proxy ({base_url})")
-        }
-        _ => unreachable!("set_env returns Set, Updated, or Unchanged"),
+    if let psk_init::EnvOutcome::Removed = env {
+        println!("psk: removed the old {BASE_URL_VAR} from settings (now set by the claude shim)");
     }
 
-    println!(
-        "\nNext: run `psk proxy` (leave it running), then start Claude Code in a new terminal —\nit picks up {BASE_URL_VAR} from settings on launch, so restart any open session."
-    );
+    // Install the transparent `claude` shim, so typing `claude` routes through `psk run`.
+    let home = psk_vault::salt::psk_home().context("locating ~/.psk")?;
+    let exe = std::env::current_exe().context("finding the psk executable")?;
+    let shim = shim::install(&home, &exe)
+        .with_context(|| format!("installing the claude shim under {}", home.display()))?;
+    match shim {
+        shim::ShimOutcome::Installed => {
+            println!("psk: installed the claude shim at {}", shim::shim_path(&home).display())
+        }
+        shim::ShimOutcome::Unchanged => println!(
+            "psk: the claude shim is already installed at {}",
+            shim::shim_path(&home).display()
+        ),
+        _ => unreachable!("install returns Installed or Unchanged"),
+    }
+
+    if shim::bin_dir_on_path(&home) {
+        println!("\nDone. Run `claude` as usual — it routes through the proxy, which starts on demand.");
+    } else {
+        println!(
+            "\nOne-time setup: put the shim on your PATH, then restart your shell:\n\
+             \n    export PATH=\"{}:$PATH\"\n\
+             \nAdd that line to your shell rc (~/.bashrc, ~/.zshrc, …). Then run `claude` as usual —\n\
+             it routes through the proxy, which starts on demand.",
+            shim::bin_dir(&home).display()
+        );
+    }
     Ok(OK)
 }
 
@@ -147,6 +175,16 @@ fn cmd_uninit() -> Result<std::process::ExitCode> {
         psk_init::EnvOutcome::Absent => {}
         _ => unreachable!("unset_env returns Removed or Absent"),
     }
+
+    // Remove the transparent `claude` shim.
+    let home = psk_vault::salt::psk_home().context("locating ~/.psk")?;
+    match shim::uninstall(&home).with_context(|| format!("removing the claude shim under {}", home.display()))? {
+        shim::ShimOutcome::Removed => {
+            println!("psk: removed the claude shim at {}", shim::shim_path(&home).display())
+        }
+        shim::ShimOutcome::Absent => {}
+        _ => unreachable!("uninstall returns Removed or Absent"),
+    }
     Ok(OK)
 }
 
@@ -163,10 +201,11 @@ fn cmd_proxy() -> Result<std::process::ExitCode> {
 
     println!("psk proxy is running on http://{bind}  (restore_mode = {mode:?})\n");
     if psk_init::is_installed(&psk_init::default_settings_path()?).unwrap_or(false) {
-        println!("  `psk init` has wired Claude Code to this proxy. Start it in another terminal.\n");
+        println!("  `psk init` has wired Claude Code to PSK. Normally you don't run this by hand —\n");
+        println!("  the `claude` shim starts a proxy on demand. This one will be reused if it's up.\n");
     } else {
-        println!("  Run `psk init` in another terminal to point Claude Code at this proxy,\n");
-        println!("  or set it yourself:  export ANTHROPIC_BASE_URL=http://{bind}\n");
+        println!("  Run `psk init` to install the PreToolUse hook and the `claude` shim,\n");
+        println!("  which start a proxy like this one automatically.\n");
     }
     // The last line before it blocks: the mistake to prevent is Ctrl-C'ing this, thinking the
     // command finished. Say plainly that it keeps running here.
