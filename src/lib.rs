@@ -1,29 +1,46 @@
-//! Minimal secret-like detector: IBAN, phone, email, card number, AWS key.
+//! Secret-like detector: data-driven token rules (`rules.toml`) plus
+//! validated PII rules (IBAN, card, phone, email).
+
+pub mod pattern;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
-#[serde(rename_all = "snake_case")]
-pub enum Kind {
-    Iban,
-    Phone,
-    Email,
-    CreditCard,
-    AwsAccessKey,
-}
+pub use pattern::{Pattern, Rand};
+
+pub const RULES_TOML: &str = include_str!("../rules.toml");
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
-    pub kind: Kind,
+    pub kind: String,
     pub value: String,
     pub start: usize,
     pub end: usize,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TokenRule {
+    pub id: String,
+    pub pattern: String,
+}
+
+#[derive(Deserialize)]
+struct RulesFile {
+    rule: Vec<TokenRule>,
+}
+
+pub fn token_rules() -> &'static [TokenRule] {
+    static R: OnceLock<Vec<TokenRule>> = OnceLock::new();
+    R.get_or_init(|| {
+        toml::from_str::<RulesFile>(RULES_TOML)
+            .expect("rules.toml")
+            .rule
+    })
+}
+
 struct Rule {
-    kind: Kind,
+    kind: &'static str,
     re: Regex,
     validate: fn(&str) -> bool,
 }
@@ -31,42 +48,45 @@ struct Rule {
 fn rules() -> &'static [Rule] {
     static RULES: OnceLock<Vec<Rule>> = OnceLock::new();
     RULES.get_or_init(|| {
-        vec![
-            Rule {
-                kind: Kind::AwsAccessKey,
-                re: Regex::new(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b").unwrap(),
+        let mut v: Vec<Rule> = token_rules()
+            .iter()
+            .map(|t| Rule {
+                kind: t.id.as_str(),
+                // token must not be glued to identifier chars on either side
+                re: Regex::new(&format!(
+                    "(?:^|[^A-Za-z0-9_])({})(?:[^A-Za-z0-9_]|$)",
+                    t.pattern
+                ))
+                .unwrap_or_else(|e| panic!("rule {}: {e}", t.id)),
                 validate: |_| true,
-            },
-            Rule {
-                kind: Kind::Email,
-                re: Regex::new(
-                    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b",
-                )
+            })
+            .collect();
+        v.push(Rule {
+            kind: "email",
+            re: Regex::new(
+                r"\b([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})\b",
+            )
+            .unwrap(),
+            validate: |_| true,
+        });
+        v.push(Rule {
+            kind: "iban",
+            re: Regex::new(r"\b([A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,4})?)\b")
                 .unwrap(),
-                validate: |_| true,
-            },
-            Rule {
-                kind: Kind::Iban,
-                // country code, 2 check digits, 11..30 alphanumerics, optional spaces every 4
-                re: Regex::new(r"\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,4})?\b")
-                    .unwrap(),
-                validate: iban_valid,
-            },
-            Rule {
-                kind: Kind::CreditCard,
-                re: Regex::new(r"\b(?:\d[ -]?){12,18}\d\b").unwrap(),
-                validate: luhn_valid,
-            },
-            Rule {
-                kind: Kind::Phone,
-                // +33 6 12 34 56 78 / 06 12 34 56 78 / (555) 123-4567 / +1-555-123-4567
-                re: Regex::new(
-                    r"(?:\+\d{1,3}[ .-]?)?(?:\(\d{2,4}\)|\b\d{1,4})(?:[ .-]?\d{2,4}){2,6}\b",
-                )
-                .unwrap(),
-                validate: phone_valid,
-            },
-        ]
+            validate: iban_valid,
+        });
+        v.push(Rule {
+            kind: "credit_card",
+            re: Regex::new(r"\b((?:\d[ -]?){12,18}\d)\b").unwrap(),
+            validate: luhn_valid,
+        });
+        v.push(Rule {
+kind: "phone",
+            // not glued to identifier/hex/dash chars (avoids UUID and hash segments)
+            re: Regex::new(r"(?:^|[^A-Za-z0-9._-])((?:\+\d{1,3}[ .-]?)?(?:\(\d{2,4}\)|\d{1,4})(?:[ .-]?\d{2,4}){2,6})(?:[^A-Za-z0-9-]|$)").unwrap(),
+            validate: phone_valid,
+        });
+        v
     })
 }
 
@@ -82,7 +102,7 @@ fn phone_valid(s: &str) -> bool {
         && (s.starts_with('+') || s.starts_with('(') || s.starts_with('0') || us.is_match(s))
 }
 
-fn luhn_valid(s: &str) -> bool {
+pub fn luhn_valid(s: &str) -> bool {
     let d = digits(s);
     if !(13..=19).contains(&d.len()) {
         return false;
@@ -131,18 +151,15 @@ pub fn iban_valid(s: &str) -> bool {
     rem == 1
 }
 
-/// Compute IBAN check digits for `cc` + bban.
 pub fn iban_check_digits(cc: &str, bban: &str) -> String {
     for n in 2..=98u32 {
-        let cand = format!("{cc}{n:02}{bban}");
-        if iban_valid(&cand) {
+        if iban_valid(&format!("{cc}{n:02}{bban}")) {
             return format!("{n:02}");
         }
     }
     unreachable!()
 }
 
-/// Append a Luhn check digit to `body`.
 pub fn luhn_complete(body: &str) -> String {
     for d in 0..10 {
         let cand = format!("{body}{d}");
@@ -154,21 +171,31 @@ pub fn luhn_complete(body: &str) -> String {
 }
 
 pub fn scan(text: &str) -> Vec<Finding> {
-    let mut out: Vec<Finding> = Vec::new();
+    let mut cands: Vec<Finding> = Vec::new();
     for rule in rules() {
-        for m in rule.re.find_iter(text) {
-            let overlaps = out.iter().any(|f| m.start() < f.end && f.start < m.end());
-            if overlaps || !(rule.validate)(m.as_str()) {
-                continue;
+        let mut at = 0;
+        while let Some(caps) = rule.re.captures_at(text, at) {
+            let m = caps.get(1).unwrap();
+            // resume right after the token so a delimiter consumed by the
+            // trailing context group can still start the next match
+            at = m.end();
+            if (rule.validate)(m.as_str()) {
+                cands.push(Finding {
+                    kind: rule.kind.to_string(),
+                    value: m.as_str().to_string(),
+                    start: m.start(),
+                    end: m.end(),
+                });
             }
-            out.push(Finding {
-                kind: rule.kind,
-                value: m.as_str().to_string(),
-                start: m.start(),
-                end: m.end(),
-            });
         }
     }
-    out.sort_by_key(|f| f.start);
+    // overlaps: earliest start wins, then the longest match
+    cands.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
+    let mut out: Vec<Finding> = Vec::new();
+    for c in cands {
+        if out.last().is_none_or(|p| c.start >= p.end) {
+            out.push(c);
+        }
+    }
     out
 }

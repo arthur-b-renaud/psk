@@ -1,11 +1,11 @@
-use psk::{iban_check_digits, luhn_complete, scan, Kind};
+use psk::{iban_check_digits, luhn_complete, scan, token_rules, Pattern, Rand};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::io::{BufRead, Read, Write};
 
 #[derive(Serialize, Deserialize)]
 struct Expected {
-    kind: Kind,
+    kind: String,
     value: String,
 }
 
@@ -15,7 +15,7 @@ struct Example {
     expected: Vec<Expected>,
 }
 
-/// Tiny deterministic PRNG (xorshift) so fixtures are reproducible without deps.
+/// Deterministic xorshift PRNG so fixtures are reproducible without deps.
 struct Rng(u64);
 impl Rng {
     fn next(&mut self) -> u64 {
@@ -32,12 +32,17 @@ impl Rng {
             .collect()
     }
     fn pick<'a>(&mut self, xs: &[&'a str]) -> &'a str {
-        xs[(self.next() % xs.len() as u64) as usize]
+        xs[self.below(xs.len())]
     }
     fn upper(&mut self, n: usize) -> String {
         (0..n)
             .map(|_| char::from(b'A' + (self.next() % 26) as u8))
             .collect()
+    }
+}
+impl Rand for Rng {
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
     }
 }
 
@@ -49,21 +54,139 @@ fn spaced4(s: &str) -> String {
         .join(" ")
 }
 
+/// Contexts a secret shows up in inside real tool output.
+fn wrap(r: &mut Rng, v: &str) -> String {
+    let t = [
+        "Please wire the funds to {} before Friday.",
+        "contact: {}",
+        "{}",
+        "Customer record updated -> {} (verified)",
+        "export API_TOKEN={}",
+        "API_TOKEN=\"{}\"",
+        "  \"token\": \"{}\",",
+        "Authorization: Bearer {}",
+        "curl -H 'X-Api-Key: {}' https://api.example.com/v1/me",
+        "token = '{}'  # TODO rotate",
+        "[2026-09-11T10:32:01Z] INFO  using credential {} for upstream",
+        "  --key={} \\",
+    ];
+    r.pick(&t).replace("{}", v)
+}
+
+fn negative(r: &mut Rng) -> String {
+    match r.below(12) {
+        0 => format!(
+            "Order #{} shipped on 2026-09-{:02}, total {}.{} EUR",
+            r.digits(6),
+            1 + r.below(28),
+            r.digits(3),
+            r.digits(2)
+        ),
+        1 => format!(
+            "commit {}{} by user{} at 14:{:02}",
+            r.upper(4).to_lowercase(),
+            r.digits(3),
+            r.digits(3),
+            r.below(60)
+        ),
+        // sha1 / sha256 hashes
+        2 => format!(
+            "sha256:{}",
+            (0..64)
+                .map(|_| "0123456789abcdef".chars().nth(r.below(16)).unwrap())
+                .collect::<String>()
+        ),
+        3 => hex(r, 40),
+        // uuid
+        4 => format!(
+            "id={}-{}-4{}-a{}-{}",
+            hex(r, 8),
+            hex(r, 4),
+            hex(r, 3),
+            hex(r, 3),
+            hex(r, 12)
+        ),
+        // lookalike prefixes that are too short / wrong charset
+        5 => r
+            .pick(&[
+                "ghp_short",
+                "AKIAlowercase1234567",
+                "sk-ant-api03-truncated",
+                "xoxb-not-a-token",
+                "glpat-",
+                "npm_install_failed",
+                "key-value store",
+                "pat.example.com",
+            ])
+            .to_string(),
+        6 => r
+            .pick(&[
+                "The meeting is at 10:30, room B2.",
+                "version 1.2.3 released; 4096 tokens max",
+                "FR76 is a prefix, not an IBAN",
+                "call me at some point",
+                "pi = 3.14159265358979",
+                "port 8080 -> 127.0.0.1",
+                "-----BEGIN CERTIFICATE-----",
+                "See https://docs.example.com/api/v2/keys for details",
+                "SELECT * FROM users WHERE id = 42;",
+                "Error: ENOENT: no such file or directory, open '/tmp/x.log'",
+            ])
+            .to_string(),
+        7 => format!(
+            "base64: {}",
+            (0..44)
+                .map(
+                    |_| "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+                        .chars()
+                        .nth(r.below(64))
+                        .unwrap()
+                )
+                .collect::<String>()
+        ),
+        8 => format!("Cargo.lock: checksum = \"{}\"", hex(r, 64)),
+        9 => format!(
+            "{} bytes written in {}.{}s",
+            r.digits(7),
+            r.digits(2),
+            r.digits(3)
+        ),
+        10 => format!(
+            "PR #{} merged, {} files changed, +{} -{}",
+            r.digits(4),
+            r.digits(2),
+            r.digits(3),
+            r.digits(2)
+        ),
+        _ => format!(
+            "temperature {}.{}°C, humidity {}%",
+            r.digits(2),
+            r.digits(1),
+            r.digits(2)
+        ),
+    }
+}
+
+fn hex(r: &mut Rng, n: usize) -> String {
+    (0..n)
+        .map(|_| "0123456789abcdef".chars().nth(r.below(16)).unwrap())
+        .collect()
+}
+
 fn gen(n: usize, seed: u64) -> Vec<Example> {
     let mut r = Rng(seed | 1);
+    let tokens: Vec<(String, Pattern)> = token_rules()
+        .iter()
+        .map(|t| {
+            (
+                t.id.clone(),
+                Pattern::parse(&t.pattern).unwrap_or_else(|e| panic!("rule {}: {e}", t.id)),
+            )
+        })
+        .collect();
     let mut out = Vec::new();
-    let wrap = |r: &mut Rng, v: &str| -> String {
-        let t = [
-            "Please wire the funds to {} before Friday.",
-            "contact: {}",
-            "{}",
-            "Customer record updated -> {} (verified)",
-            "Note to self, the value was {} apparently.",
-        ];
-        r.pick(&t).replace("{}", v)
-    };
     for i in 0..n {
-        let (text, expected) = match i % 8 {
+        let (text, expected) = match i % 10 {
             0 => {
                 let cc = r.pick(&["FR", "DE", "GB", "ES", "NL"]);
                 let len = match cc {
@@ -87,13 +210,13 @@ fn gen(n: usize, seed: u64) -> Vec<Example> {
                 (
                     wrap(&mut r, &v),
                     vec![Expected {
-                        kind: Kind::Iban,
+                        kind: "iban".into(),
                         value: v,
                     }],
                 )
             }
             1 => {
-                let v = match r.next() % 4 {
+                let v = match r.below(4) {
                     0 => format!(
                         "+33 6 {} {} {} {}",
                         r.digits(2),
@@ -103,24 +226,19 @@ fn gen(n: usize, seed: u64) -> Vec<Example> {
                     ),
                     1 => format!(
                         "0{} {} {} {} {}",
-                        6 + r.next() % 2,
+                        6 + r.below(2),
                         r.digits(2),
                         r.digits(2),
                         r.digits(2),
                         r.digits(2)
                     ),
-                    2 => format!("({}) {}-{}", 200 + r.next() % 700, r.digits(3), r.digits(4)),
-                    _ => format!(
-                        "+1-{}-{}-{}",
-                        200 + r.next() % 700,
-                        r.digits(3),
-                        r.digits(4)
-                    ),
+                    2 => format!("({}) {}-{}", 200 + r.below(700), r.digits(3), r.digits(4)),
+                    _ => format!("+1-{}-{}-{}", 200 + r.below(700), r.digits(3), r.digits(4)),
                 };
                 (
                     wrap(&mut r, &v),
                     vec![Expected {
-                        kind: Kind::Phone,
+                        kind: "phone".into(),
                         value: v,
                     }],
                 )
@@ -136,15 +254,14 @@ fn gen(n: usize, seed: u64) -> Vec<Example> {
                 (
                     wrap(&mut r, &v),
                     vec![Expected {
-                        kind: Kind::Email,
+                        kind: "email".into(),
                         value: v,
                     }],
                 )
             }
             3 => {
                 let body = format!("{}{}", r.pick(&["4", "51", "37"]), r.digits(15));
-                let body = &body[..15];
-                let card = luhn_complete(body);
+                let card = luhn_complete(&body[..15]);
                 let v = if r.next().is_multiple_of(2) {
                     spaced4(&card)
                 } else {
@@ -153,65 +270,23 @@ fn gen(n: usize, seed: u64) -> Vec<Example> {
                 (
                     wrap(&mut r, &v),
                     vec![Expected {
-                        kind: Kind::CreditCard,
+                        kind: "credit_card".into(),
                         value: v,
                     }],
                 )
             }
-            4 => {
-                let v = format!(
-                    "AKIA{}",
-                    (0..16)
-                        .map(|_| {
-                            let c = r.next() % 36;
-                            if c < 10 {
-                                char::from(b'0' + c as u8)
-                            } else {
-                                char::from(b'A' + (c - 10) as u8)
-                            }
-                        })
-                        .collect::<String>()
-                );
+            4..=6 => {
+                let (id, pat) = &tokens[r.below(tokens.len())];
+                let v = pat.sample(&mut r);
                 (
                     wrap(&mut r, &v),
                     vec![Expected {
-                        kind: Kind::AwsAccessKey,
+                        kind: id.clone(),
                         value: v,
                     }],
                 )
             }
-            // hard negatives: must yield no finding
-            5 => (
-                format!(
-                    "Order #{} shipped on 2026-09-{:02}, total {}.{} EUR",
-                    r.digits(6),
-                    1 + r.next() % 28,
-                    r.digits(3),
-                    r.digits(2)
-                ),
-                vec![],
-            ),
-            6 => (
-                format!(
-                    "commit {} by user{} at 14:{:02}",
-                    r.upper(7).to_lowercase(),
-                    r.digits(3),
-                    r.next() % 60
-                ),
-                vec![],
-            ),
-            _ => (
-                r.pick(&[
-                    "The meeting is at 10:30, room B2.",
-                    "version 1.2.3 released; 4096 tokens max",
-                    "FR76 is a prefix, not an IBAN",
-                    "call me at some point",
-                    "pi = 3.14159265358979",
-                    "port 8080 -> 127.0.0.1",
-                ])
-                .to_string(),
-                vec![],
-            ),
+            _ => (negative(&mut r), vec![]),
         };
         out.push(Example { text, expected });
     }
@@ -220,19 +295,18 @@ fn gen(n: usize, seed: u64) -> Vec<Example> {
 
 fn eval(path: &str) -> std::io::Result<()> {
     let f = std::fs::File::open(path)?;
-    let mut total = 0usize;
-    let mut ok = 0usize;
+    let (mut total, mut ok) = (0usize, 0usize);
     for line in std::io::BufReader::new(f).lines() {
         let line = line?;
         if line.trim().is_empty() {
             continue;
         }
         let ex: Example = serde_json::from_str(&line).expect("bad fixture line");
-        let got: BTreeSet<(Kind, String)> = scan(&ex.text)
+        let got: BTreeSet<(String, String)> = scan(&ex.text)
             .into_iter()
             .map(|f| (f.kind, f.value))
             .collect();
-        let want: BTreeSet<(Kind, String)> =
+        let want: BTreeSet<(String, String)> =
             ex.expected.into_iter().map(|e| (e.kind, e.value)).collect();
         total += 1;
         if got == want {
@@ -268,6 +342,11 @@ fn main() -> std::io::Result<()> {
             }
         }
         Some("eval") => eval(args.get(2).expect("usage: psk eval <fixtures.jsonl>"))?,
+        Some("rules") => {
+            for t in token_rules() {
+                println!("{:36} {}", t.id, t.pattern);
+            }
+        }
         Some("scan") | None => {
             let mut text = String::new();
             std::io::stdin().read_to_string(&mut text)?;
@@ -276,7 +355,7 @@ fn main() -> std::io::Result<()> {
             }
         }
         Some(other) => {
-            eprintln!("unknown command {other}; use scan | gen [n] [seed] | eval <file>");
+            eprintln!("unknown command {other}; use scan | gen [n] [seed] | eval <file> | rules");
             std::process::exit(2);
         }
     }

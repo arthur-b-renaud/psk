@@ -2,7 +2,7 @@
 # Generate local fixtures (gitignored) and measure detector accuracy.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-N="${1:-200}"; SEED="${2:-42}"
+N="${1:-1000}"; SEED="${2:-42}"
 cargo build --release --quiet
 mkdir -p fixtures
 ./target/release/psk gen "$N" "$SEED" > fixtures/examples.jsonl
